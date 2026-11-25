@@ -1,0 +1,173 @@
+import type { Group, Vector3 } from 'three'
+import type { Rig, RigStyle } from './meshes'
+import type { OriginId, UniId } from './origins'
+
+/* Üs savunması ve koloni verisi. Burada yalnız sabitler ve saf mantık var;
+   sahneyle konuşan kısım game.ts içindedir. */
+
+export const BASE_COST_HOME = 30
+export const OUTPOST_COST = 60
+export const TURRET_COST = 20
+export const REPAIR_COST = 10
+export const UPGRADE_COST: Record<number, number> = { 2: 60, 3: 110, 4: 180, 5: 280 }
+export const MAX_LEVEL = 5
+export const SIEGE_WAVES = 3
+export const FIRST_WAVE_DELAY = 22
+export const WAVE_GAP = 30
+export const BOT_WAVE_GAP = 75
+export const BOT_TICK = 40
+export const BOT_MAX_PER_UNIVERSE = 4
+/** Ganimetin ana karakol deposuna giden payı (depo dolunca karakol seviye atlar). */
+export const LOOT_TO_OUTPOST = 0.6
+/** Bot türleri ilk bu kadar saniye oyuncunun ev sistemine dokunmaz. */
+export const HOME_GRACE = 360
+/** Yıkılan karakolun gezegeni bu kadar süre boş kalır (yerli ya da bot doğmaz). */
+export const RAZE_LOCK = 300
+/** Bot türlerinin başlangıç karakol seviyesi. */
+export const BOT_START_LEVEL = 2
+/** Karakol çekirdeği seviyeye göre gelen hasarı azaltır. */
+export const coreArmor = (level: number) => 1 / (1 + 0.18 * (level - 1))
+export const BUILD_REACH = 46
+export const CORE_REACH = 9
+export const CORE_RADIUS = 3.4
+export const TURRET_RADIUS = 1.1
+export const PLAYER_RADIUS = 0.8
+
+export const coreHullMax = (level: number) => 220 + level * 120
+export const turretSlots = (level: number) => 2 + level * 2
+export const turretDamage = (level: number) => 6 + level * 3
+export const turretCooldown = (level: number) => 0.85 - level * 0.1
+export const TURRET_RANGE = 26
+export const TURRET_HULL = 70
+/** Yerleşimci tavanı: karakolun seviyesi ve taret sayısıyla büyür. Seviye 5'te gezegen dolup taşar. */
+export const settlerCap = (level: number, turrets: number) => [0, 3, 8, 14, 22, 32][Math.min(5, Math.max(1, level))] + Math.floor(turrets * 0.5)
+export const popGrowth = (level: number) => 0.04 + 0.03 * level
+export const waveHullMul = (n: number) => 1 + (n - 1) * 0.07
+
+export type InvaderKind = 'runner' | 'brute' | 'spitter' | 'queen'
+export type SettlerKind = 'settler' | 'archer' | 'guard'
+export type UnitKind = InvaderKind | SettlerKind
+
+export type InvaderSpec = {
+  name: string
+  hull: number
+  speed: number
+  dmg: number
+  reach: number
+  radius: number
+  scale: number
+  color: number
+  style: RigStyle
+  score: number
+  cool: number
+}
+
+export const INVADER: Record<InvaderKind, InvaderSpec> = {
+  runner: { name: 'Koşucu', hull: 14, speed: 5.6, dmg: 4, reach: 2.3, radius: 0.7, scale: 1, color: 0x7be07a, style: 'hop', score: 8, cool: 0.9 },
+  brute: { name: 'Kaba', hull: 52, speed: 2.7, dmg: 11, reach: 3.2, radius: 1.35, scale: 1.2, color: 0xd0508e, style: 'purple', score: 20, cool: 1.5 },
+  spitter: { name: 'Tükürük', hull: 22, speed: 3.2, dmg: 5, reach: 15, radius: 0.9, scale: 1.0, color: 0x5fb4ee, style: 'shadow', score: 14, cool: 1.8 },
+  queen: { name: 'Kovan Ana', hull: 260, speed: 2.1, dmg: 20, reach: 4.4, radius: 2.1, scale: 2.2, color: 0xe8b04a, style: 'purple', score: 120, cool: 1.8 },
+}
+
+export const SETTLER: Record<SettlerKind, InvaderSpec> = {
+  settler: { name: 'Yancı', hull: 18, speed: 4.2, dmg: 3, reach: 2.2, radius: 0.65, scale: 1, color: 0xfff1c4, style: 'walk', score: 0, cool: 0.9 },
+  archer: { name: 'Nişancı', hull: 20, speed: 3.2, dmg: 4, reach: 14, radius: 0.8, scale: 1, color: 0xbfe8ff, style: 'walk', score: 0, cool: 1.3 },
+  guard: { name: 'Koruyucu', hull: 70, speed: 2.9, dmg: 10, reach: 3, radius: 1.15, scale: 1.3, color: 0xffd27a, style: 'walk', score: 0, cool: 1.2 },
+}
+
+/** Nüfusun çoğu yancıdır (küçük, zayıf, ırkın sade sürümü). Ana karakterler (koruyucu, nişancı)
+ *  seviyeyle açılır: sv 2'de 1, sv 5'te 4. Baskın ekibinin kalbi bunlardır. */
+export const heroCap = (level: number) => Math.max(0, Math.min(4, level - 1))
+export const isHero = (kind: string) => kind === 'archer' || kind === 'guard'
+export const heroKind = (index: number): SettlerKind => (index % 2 === 0 ? 'guard' : 'archer')
+/** Eski çağrılar için: i. yerleşimci. */
+export function settlerKind(level: number, index: number): SettlerKind {
+  return index < heroCap(level) ? heroKind(index) : 'settler'
+}
+
+export function waveRoster(n: number): InvaderKind[] {
+  const runners = Math.min(14, 3 + n * 2)
+  const brutes = n >= 3 ? Math.min(6, Math.floor((n - 1) / 2)) : 0
+  const spitters = n >= 4 ? Math.min(6, Math.floor(n / 2) - 1) : 0
+  const queens = n % 5 === 0 ? 1 + Math.floor(n / 15) : 0
+  const out: InvaderKind[] = []
+  const lanes: [InvaderKind, number][] = [['runner', runners], ['brute', brutes], ['spitter', spitters]]
+  let left = true
+  while (left) {
+    left = false
+    for (const lane of lanes) {
+      if (lane[1] > 0) {
+        out.push(lane[0])
+        lane[1]--
+        left = true
+      }
+    }
+  }
+  for (let i = 0; i < queens; i++) out.push('queen')
+  return out
+}
+
+export const waveReward = (n: number, early: boolean) => Math.round((14 + n * 6) * (early ? 1.25 : 1))
+
+export type Turret = {
+  dir: Vector3 // gezegen yerelinde birim yön
+  root: Group
+  head: Group
+  cool: number
+  hull: number
+  alive: boolean
+}
+
+export type Colony = {
+  planetId: string
+  planetName: string
+  universe: UniId
+  owner: OriginId // üssü kuran türün kökeni
+  pop: number // yerleşimci nüfusu (gezegen yüklü değilken de büyür)
+  settleT: number
+  attacker: OriginId | null // sürmekte olan dalgayı gönderen tür
+  kind: 'main' | 'colony'
+  dir: Vector3 // gezegen yerelinde birim yön
+  level: number
+  hull: number
+  hullMax: number
+  wave: number // tamamlanan dalga sayısı
+  state: 'idle' | 'wave'
+  countdown: number
+  founded: boolean // koloni kuşatmayı tamamladı mı (ana üs için hep true)
+  early: boolean
+  queue: InvaderKind[]
+  spawnT: number
+  turrets: Turret[]
+  root: Group | null
+  core: Group | null
+  coreBar: Group | null
+  /** Ganimet deposu: dolunca karakol kendiliğinden seviye atlar. */
+  store?: number
+  /** Uzaydaki gemilere ateş eden çekirdek topunun bekleme süresi. */
+  shipCool?: number
+  /** İleride: gemiyle oyuncuyu takip edip baskına katılacak yerleşimci sayısı (şimdilik kullanılmıyor). */
+  reserve?: number
+}
+
+export type Unit = {
+  alive: boolean
+  kind: UnitKind
+  spec: InvaderSpec
+  faction: OriginId // hangi türden
+  invader: boolean // saldıran mı, yerleşimci mi
+  colonyId: string // yerleşimcinin üssü (gezegen kimliği)
+  root: Group
+  rig: Rig
+  dir: Vector3 // gezegen merkezine göre birim yön (dünya çerçevesi)
+  hull: number
+  hullMax: number
+  cool: number
+  phase: number
+  attack: number
+  goal: Vector3 | null
+  /** Animasyon seyreltme için sabit sıra numarası. */
+  seq?: number
+  /** Oyuncunun baskın ekibinden: oyuncuyu izler, yerlilere ve düşman üssüne saldırır. */
+  squad?: boolean
+}

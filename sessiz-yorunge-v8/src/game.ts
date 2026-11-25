@@ -1,0 +1,7345 @@
+import {
+  ACESFilmicToneMapping,
+  AdditiveBlending,
+  AmbientLight,
+  BoxGeometry,
+  Color,
+  BufferAttribute,
+  BufferGeometry,
+  DepthFormat,
+  DepthTexture,
+  DoubleSide,
+  BackSide,
+  DirectionalLight,
+  FogExp2,
+  Group,
+  HemisphereLight,
+  Line,
+  LineBasicMaterial,
+  MathUtils,
+  Matrix4,
+  CylinderGeometry,
+  MeshStandardMaterial,
+  OctahedronGeometry,
+  Mesh,
+  MeshBasicMaterial,
+  PerspectiveCamera,
+  PointLight,
+  Points,
+  PointsMaterial,
+  Quaternion,
+  RingGeometry,
+  Scene,
+  ShaderMaterial,
+  SphereGeometry,
+  Sprite,
+  TorusGeometry,
+  SpriteMaterial,
+  SRGBColorSpace,
+  UnsignedIntType,
+  Vector2,
+  Vector3,
+  WebGLRenderer,
+  WebGLRenderTarget,
+} from 'three'
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js'
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
+import { AudioBus } from './audio'
+import { Input } from './input'
+import { buildBar, buildCuteAlien, buildFleetIcon, buildFragment, buildHumanFighter, buildPilot, buildPlanet, buildPoi, buildShip, buildWormhole, glowTexture, paintBar, paintLabel, paintPlanet, type PlayerVisual, type Rig } from './meshes'
+import { cruiseSpeed, ABILITY_INFO, ORIGINS, UNIVERSES, WEAPONS, homeSystem, originById, signatureWeapon, starterWeapons, type AbilityId, type OriginId, type PlanetDef, type UniId, type WeaponId } from './origins'
+import { drawPortrait } from './portraits'
+import {
+  BASE_COST_HOME,
+  BOT_START_LEVEL,
+  HOME_GRACE,
+  LOOT_TO_OUTPOST,
+  RAZE_LOCK,
+  coreArmor,
+  BOT_TICK,
+  BOT_WAVE_GAP,
+  BUILD_REACH,
+  CORE_RADIUS,
+  CORE_REACH,
+  FIRST_WAVE_DELAY,
+  INVADER,
+  MAX_LEVEL,
+  OUTPOST_COST,
+  PLAYER_RADIUS,
+  REPAIR_COST,
+  SETTLER,
+  SIEGE_WAVES,
+  TURRET_COST,
+  TURRET_HULL,
+  TURRET_RADIUS,
+  TURRET_RANGE,
+  UPGRADE_COST,
+  WAVE_GAP,
+  coreHullMax,
+  popGrowth,
+  settlerCap,
+  heroCap,
+  heroKind,
+  isHero,
+  turretCooldown,
+  turretDamage,
+  turretSlots,
+  waveHullMul,
+  waveReward,
+  waveRoster,
+  type Colony,
+  type InvaderKind,
+  type SettlerKind,
+  type Turret,
+  type Unit,
+  type UnitKind,
+} from './colony'
+import { RigFlash, Sparks, Swing, Tracers } from './groundfx'
+import { FEET, buildCreature, buildMinion } from './creatures'
+import { factionName, footTrait, nativeLook, originLook } from './species'
+import { hashSeed, makeRng } from './worldgen'
+import { clearRun, loadSave, writeRun, writeSave, type SaveData } from './persist'
+import {
+  diskFrag,
+  diskVert,
+  LensShader,
+  nebulaFrag,
+  nebulaVert,
+  starFrag,
+  starVert,
+} from './shaders'
+
+const RS = 18
+const MAP_LIMIT = 2600 // en küçük sınır; gerçek sınır evrenin boyuna göre `mapLimit`
+const SKY_RADIUS = 20000 // gökyüzü küresi kamerayla birlikte gider
+const CRUISE_CAP = 215 // savaşta / gövde yakınında hız sınırı (ırkın seyir hızını aşmaz)
+const RADAR_RANGE = 280
+const BANDS = [
+  { at: 36, n: 2, threat: 1 },
+  { at: 64, n: 3, threat: 2 },
+  { at: 88, n: 5, threat: 3 },
+] as const
+
+const LINES: [number, string][] = [
+  [0, '13,8 milyar yıl önce…'],
+  [5.2, 'Tek bir nokta vardı.\nSonra ışık.'],
+  [9.6, 'Uzay açıldı.\nİlk yıldızlar tutuştu.'],
+  [14.8, 'Yandılar, söndüler.\nGeriye kara delikler kaldı.'],
+  [20.2, 'Galaksiler örüldü.\nSayısız dünya, sayısız uygarlık.'],
+  [26.2, 'Karanlık orman:\nkimse konuşmaz. Duyulan, bulunur.'],
+  [32.2, 'Bulunan da avlanır.'],
+]
+
+const TIPS = [
+  'Yörüngedesin. Motoru yakmak seni görünür kılar.',
+  'Parçaları topla. Delik yaklaştıkça dış zaman hızlanır.',
+  'Kırmızı filolar gürültüye gelir. F ile kapış; uzaklaşırsan kaçabilirsin.',
+]
+
+type Mode = 'intro' | 'title' | 'select' | 'map' | 'combat' | 'upgrade' | 'pause' | 'gameover'
+type UpId = 'hull' | 'shield' | 'weapon' | 'engine' | 'stealth'
+type FleetState = 'patrol' | 'hunt' | 'search' | 'leave'
+type CamMode = 'chase' | 'cockpit'
+
+type Fleet = {
+  id: number
+  pos: Vector3
+  vel: Vector3
+  threat: number
+  count: number
+  state: FleetState
+  lastKnown: Vector3
+  searchLeft: number
+  angle: number
+  orbit: number
+  center: Vector3
+  root: THREEGroup
+  /** Ev sistemindeki eğitim gemileri: tek, küçük ve zayıf. */
+  small?: boolean
+  /** Bir gezegene bağlı devriye: merkez gezegenle birlikte yörüngede ilerler. */
+  around?: Planet
+  offset?: Vector3
+  /** İnişte yörüngeye çekilen savaş filosu; kalkınca yeniden saldırır. */
+  stashed?: boolean
+}
+
+/** Uzay savaşında düşen ganimet parçası: yakına gelince oyuncuya çekilir. */
+type Loot = {
+  alive: boolean
+  pos: Vector3
+  vel: Vector3
+  value: number
+  age: number
+  mesh: THREEGroup
+}
+
+type Frag = {
+  alive: boolean
+  angle: number
+  radius: number
+  y: number
+  spin: number
+  phase: number
+  mesh: THREEGroup
+}
+
+type Enemy = {
+  root: THREEGroup
+  pos: Vector3
+  vel: Vector3
+  quat: Quaternion
+  hull: number
+  hullMax: number
+  shield: number
+  shieldMax: number
+  cool: number
+  strafe: number
+  strafeT: number
+  alive: boolean
+  threat: number
+  stun: number
+  flashT: number
+  human: boolean
+  attack: 'bolt' | 'homing' | 'goo' | 'well' | 'gate'
+  giant: boolean
+  scale: number
+  weak: Mesh | null
+  bar: Sprite | null
+  bodyFlash: () => void
+  /** Eğitim gemisi: az can, az hasar, az ganimet. */
+  small?: boolean
+}
+
+type ShotKind = 'bolt' | 'homing' | 'goo' | 'laser' | 'pellet' | 'rocket' | 'plasma' | 'chain'
+
+type Shot = {
+  alive: boolean
+  friendly: boolean
+  pos: Vector3
+  prev: Vector3
+  vel: Vector3
+  age: number
+  dmg: number
+  kind: ShotKind
+  hops: number
+  mesh: Mesh
+}
+
+type Boom = {
+  alive: boolean
+  age: number
+  life: number
+  points: Points
+  positions: Float32Array
+  vels: Float32Array
+  mat: PointsMaterial
+  sprite: Sprite
+  spriteMat: SpriteMaterial
+}
+
+type THREEGroup = Group
+
+type Planet = { def: PlanetDef; pos: Vector3; mesh: Group; village: Group | null; anchor: Vector3; rate: number; spin: number; spinRate: number }
+
+type Local = {
+  alive: boolean
+  root: Group
+  rig: Rig
+  home: Vector3
+  axis: Vector3
+  phase: number
+  hull: number
+  cool: number
+  attack: number
+  friendly: boolean
+}
+
+type RouteTarget = { kind: 'planet' | 'worm'; id: string; system: UniId }
+
+type Gate = {
+  alive: boolean
+  pos: Vector3
+  life: number
+  owner: Enemy | null
+  to: UniId
+  mesh: Group
+  brought: boolean
+}
+
+type Bookmark = { pos: Vector3; vel: Vector3; quat: Quaternion }
+
+type Hole = {
+  kind: 'hole' | 'worm'
+  pos: Vector3
+  rs: number
+  gm: number
+  curve: number
+  to?: UniId
+  disk: Mesh | null
+  worm: Group | null
+}
+
+const UPS: { id: UpId; name: string; blurb: string }[] = [
+  { id: 'hull', name: 'Gövde', blurb: 'Daha çok hasar yutar, biraz onarır.' },
+  { id: 'shield', name: 'Kalkan', blurb: 'Kalkan büyür ve daha çabuk döner.' },
+  { id: 'weapon', name: 'Silah', blurb: 'Atışların daha sert vurur.' },
+  { id: 'engine', name: 'Motor', blurb: 'Daha sert itiş, aynı gürültü.' },
+  { id: 'stealth', name: 'Gizlilik', blurb: 'Gürültün daha yavaş birikir.' },
+]
+
+const vA = new Vector3()
+const vB = new Vector3()
+const vC = new Vector3()
+const vD = new Vector3()
+const vE = new Vector3()
+const vF = new Vector3()
+const vG = new Vector3()
+const vH = new Vector3()
+const vI = new Vector3()
+const vJ = new Vector3()
+const vK = new Vector3()
+const vL = new Vector3()
+const vM = new Vector3()
+const vH2 = new Vector3()
+const vI2 = new Vector3()
+const vJ2 = new Vector3()
+const vO1 = new Vector3()
+const vO2 = new Vector3()
+const bX = new Vector3()
+const bY = new Vector3()
+const bZ = new Vector3()
+const qA = new Quaternion()
+const qB = new Quaternion()
+const basis = new Matrix4()
+const WORLD_UP = new Vector3(0, 1, 0)
+const AXIS_X = new Vector3(1, 0, 0)
+const AXIS_Y = new Vector3(0, 1, 0)
+const AXIS_Z = new Vector3(0, 0, 1)
+
+function clamp(n: number, a: number, b: number) {
+  return Math.max(a, Math.min(b, n))
+}
+function lerp(a: number, b: number, t: number) {
+  return a + (b - a) * t
+}
+function smoothstep(e0: number, e1: number, x: number) {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1)
+  return t * t * (3 - 2 * t)
+}
+function fmt(n: number) {
+  return Math.floor(n).toLocaleString('tr-TR')
+}
+function fmt2(n: number) {
+  return n.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+function clock(seconds: number) {
+  const s = Math.max(0, Math.floor(seconds))
+  const pad = (v: number) => v.toString().padStart(2, '0')
+  const hh = Math.floor(s / 3600)
+  const mm = Math.floor(s / 60) % 60
+  const ss = s % 60
+  return hh > 0 ? `${hh}:${pad(mm)}:${pad(ss)}` : `${pad(mm)}:${pad(ss)}`
+}
+function costOf(level: number) {
+  return Math.round(24 * Math.pow(1.7, level - 1))
+}
+function timeFactorAt(r: number, rs = RS, curve = 1.65) {
+  const safe = Math.max(r, rs + 0.04)
+  const gr = Math.sqrt(Math.max(0, 1 - rs / safe))
+  return Math.max(0.08, Math.pow(gr, curve))
+}
+/** Baskın ekibi sınırları ve eşlik gemilerinin kanat düzeni (gemi yerel ekseni; ileri −Z). */
+const SQUAD_MAX = 8
+const SQUAD_HEROES = 3
+const ESCORT_SLOTS: [number, number, number][] = [
+  [-5.5, -0.6, -2],
+  [5.5, -0.6, -2],
+  [-3.2, 1.8, 1],
+  [3.2, 1.8, 1],
+]
+function quatFromForward(out: Quaternion, forward: Vector3) {
+  bZ.set(-forward.x, -forward.y, -forward.z)
+  if (bZ.lengthSq() < 1e-8) bZ.set(0, 0, 1)
+  else bZ.normalize()
+  bX.crossVectors(WORLD_UP, bZ)
+  if (bX.lengthSq() < 1e-6) bX.set(1, 0, 0)
+  else bX.normalize()
+  bY.crossVectors(bZ, bX).normalize()
+  basis.makeBasis(bX, bY, bZ)
+  out.setFromRotationMatrix(basis)
+  return out
+}
+function shipForward(q: Quaternion, out: Vector3) {
+  return out.set(0, 0, -1).applyQuaternion(q)
+}
+function shipRight(q: Quaternion, out: Vector3) {
+  return out.set(1, 0, 0).applyQuaternion(q)
+}
+function shipUp(q: Quaternion, out: Vector3) {
+  return out.set(0, 1, 0).applyQuaternion(q)
+}
+function levelWings(q: Quaternion, dt: number, strength: number) {
+  shipForward(q, vA)
+  shipUp(q, vB)
+  // Burun dik yukarı/aşağı bakarken "ufuk" tanımsızdır; düzlemeye çalışmak gemiyi her karede
+  // rastgele yuvarlıyordu (takla). Dikleştikçe düzleme gücü sıfıra iner.
+  const steep = Math.abs(WORLD_UP.dot(vA))
+  // Ters dönmüş gemiyi (takla sonrası) kendiliğinden çevirmeye kalkmaz: saniyede yüzlerce derece yuvarlanıyordu.
+  const upright = clamp((WORLD_UP.dot(vB) + 0.1) / 0.4, 0, 1)
+  const fade = clamp((0.92 - steep) / 0.25, 0, 1) * upright
+  if (fade <= 0) return
+  strength *= fade
+  vC.copy(WORLD_UP).addScaledVector(vA, -WORLD_UP.dot(vA))
+  if (vC.lengthSq() < 1e-6) return
+  vC.normalize()
+  vD.crossVectors(vB, vC)
+  const sin = Math.min(1, vD.length())
+  const cos = clamp(vB.dot(vC), -1, 1)
+  const angle = Math.atan2(sin, cos)
+  if (angle < 0.0008) return
+  vD.normalize()
+  qA.setFromAxisAngle(vD, angle * (1 - Math.exp(-strength * dt)))
+  q.premultiply(qA)
+}
+function stabilizeFull(q: Quaternion, dt: number) {
+  shipForward(q, vE)
+  vE.y = 0
+  if (vE.lengthSq() < 1e-6) vE.set(0, 0, -1)
+  else vE.normalize()
+  quatFromForward(qB, vE)
+  q.slerp(qB, 1 - Math.exp(-4 * dt))
+}
+function distPointSeg(p: Vector3, a: Vector3, b: Vector3) {
+  vG.subVectors(b, a)
+  const l2 = vG.lengthSq()
+  if (l2 < 1e-6) return p.distanceTo(a)
+  const t = clamp(vF.subVectors(p, a).dot(vG) / l2, 0, 1)
+  return p.distanceTo(vF.copy(a).addScaledVector(vG, t))
+}
+
+function must<T extends HTMLElement>(id: string) {
+  const el = document.getElementById(id)
+  if (!el) throw new Error(`#${id} yok`)
+  return el as T
+}
+
+class Game {
+  mode: Mode = 'intro'
+  pausedFrom: Mode = 'map'
+  camMode: CamMode = 'chase'
+  fading = false
+  ending = false
+  snapCamera = true
+  pr = Math.min(window.devicePixelRatio || 1, 1.5)
+  slow = 0
+  clockT = 0
+  diskTime = 0
+  introT = 0
+  lineShown = -1
+  bangPlayed = false
+  skipLock = 0
+  fadeToken = 0
+  properTime = 0
+  coordTime = 0
+  tf = 1
+  worldScale = 1
+  score = 0
+  best = 0
+  energy = 0
+  kills = 0
+  fights = 0
+  vis = 0
+  grace = 2
+  scoreTick = 0
+  fragTimer = 0
+  fireCd = 0
+  hitCd = 0
+  muzzleT = 0
+  muzzleSide = 1
+  stabilizeT = 0
+  trauma = 0
+  hurtV = 0
+  shieldFlash = 0
+  boosting = false
+  lastLoot = 0
+  /** Yerinde uzay savaşı sürüyor mu (ayrı sahne yok). */
+  skirmish = false
+  loot: Loot[] = []
+  lootSum = 0
+  lootToastT = 0
+  homePatrols = 0
+  homePatrolT = 0
+  coreSpots: { c: Colony; planet: Planet; pos: Vector3; up: Vector3 }[] = []
+  unitFrame = 0
+  unitSeq = 0
+  toastT = 0
+  tipI = 0
+  tipT = 1.4
+  tipsOn = true
+  hullWarned = false
+  suppressPause = false
+  fps = 60
+  fleetSeq = 1
+  bandFired = [false, false, false]
+  combatCount = 2
+  combatThreat = 1
+  combatTime = 0
+  forceAim = false
+  autoFire = false
+  holdPose = false
+  muteMem = 0.72
+  originId: OriginId = 'earth'
+  originIndex = 0
+  universeId: UniId = 'avlu'
+  wins = 0
+  cd1 = 0
+  cd2 = 0
+  cloakT = 0
+  wellLife = 0
+  wellPos = new Vector3()
+  enemyWells: { alive: boolean; pos: Vector3; life: number; owner: Enemy | null; mesh: Group }[] = []
+  boltMat!: MeshBasicMaterial
+  homingMat!: MeshBasicMaterial
+  gooMat!: MeshBasicMaterial
+  transitionLock = 0
+  ab1Was = false
+  ab2Was = false
+  layer: 'ship' | 'foot' = 'ship'
+  footPlanet: Planet | null = null
+  weapon: WeaponId = 'laser'
+  owned: WeaponId[] = ['laser']
+  floats: { el: HTMLElement; life: number; pos: Vector3; up?: Vector3 }[] = []
+  powerT = 0
+  yawSm = 0
+  pitchSm = 0
+  heat = 0
+  hitMark = 0
+  lockTarget: Enemy | null = null
+  planets: Planet[] = []
+  planetMeshes: Group[] = []
+  pois: Group[] = []
+  villages: Group[] = []
+  locals: Local[] = []
+  colonies: Record<string, Colony> = {}
+  units: Unit[] = []
+  botSeeded = new Set<string>()
+  botT = 40
+  cleared = new Set<string>()
+  /** Yıkılan karakolların gezegenleri: planetId -> yıkıldığı an (properTime). */
+  razed = new Map<string, number>()
+  walkerLook = ''
+  incomeAcc = 0
+  waveBearing = 0
+  buildWas = false
+  turretWas = false
+  waveWas = false
+  tmpTurretDir = new Vector3()
+  sepList: { dir: Vector3; r: number; kind: 0 | 1 | 2 }[] = []
+  sepCore = new Vector3()
+  sepTurrets: Vector3[] = []
+  flash = new RigFlash()
+  sparks!: Sparks
+  tracers!: Tracers
+  swing!: Swing
+  walkerRig!: Rig
+  walker!: Group
+  route: RouteTarget | null = null
+  routeLine!: Line
+  ambushCd = 20
+  ambushes = 0
+  punchT = 0
+  mobileCam = false
+  footForward = new Vector3(0, 0, -1)
+  footAlt = 1.1
+  footVel = 0
+  footSpeed = 0
+  grounded = true
+  parkedShip = new Vector3()
+  parkOffset = new Vector3() // park yeri gezegene göre; gezegen yörüngede ilerledikçe gemi de gider
+  fleetAimPos = new Vector3()
+  footCenter = new Vector3() // yayayken gezegen merkezinin önceki konumu: karakter yüzeyde kaymasın
+  jumpBuf = 0
+  punchCd = 0
+  landWas = false
+  jumpWas = false
+  punchWas = false
+  weaponWas = false
+  returns: Partial<Record<UniId, Bookmark>> = {}
+  enemyGates: Gate[] = []
+  laserMat!: MeshBasicMaterial
+  pelletMat!: MeshBasicMaterial
+  rocketMat!: MeshBasicMaterial
+  plasmaMat!: MeshBasicMaterial
+  chainMat!: MeshBasicMaterial
+  ships: Partial<Record<OriginId, PlayerVisual>> = {}
+  pilots: Partial<Record<OriginId, Group>> = {}
+  holes: Hole[] = []
+  diskMeshes: Mesh[] = []
+  wormMeshes: Group[] = []
+  diskGeo!: BufferGeometry
+  wellMesh!: Group
+  bhLight!: PointLight
+  mapLimit = MAP_LIMIT
+  edgeToastCd = 0
+  clickWas = false
+  upgradeWas = false
+  /** Baskın ekibi: gemideyken taşınan yancılar ve ana karakterler. */
+  squad: { kind: SettlerKind; hull: number; hullMax: number }[] = []
+  escorts: Group[] = []
+  escortCd = 0
+  squadWas = false
+  radarMode: 'radar' | 'system' = 'radar'
+  camUp = new Vector3(0, 1, 0)
+  fragInner = 120
+  sky!: Mesh
+  stars!: Points
+
+  pos = new Vector3(0, 48, 220)
+  vel = new Vector3()
+  quat = new Quaternion()
+  hull = 100
+  hullMax = 100
+  shield = 52
+  shieldMax = 52
+  regen = 7
+  weaponMul = 1
+  engineMul = 1
+  stealthMul = 1
+  up: Record<UpId, number> = { hull: 1, shield: 1, weapon: 1, engine: 1, stealth: 1 }
+  saved = { pos: new Vector3(), vel: new Vector3(), quat: new Quaternion() }
+
+  save: SaveData
+  audio = new AudioBus()
+  input: Input
+  renderer: WebGLRenderer
+  scene = new Scene()
+  camera: PerspectiveCamera
+  composer: EffectComposer
+  lensPass: ShaderPass
+  bloom: UnrealBloomPass
+  visual!: PlayerVisual
+  mapRoot = new Group()
+  combatRoot = new Group()
+  diskMat: ShaderMaterial
+  starMat!: ShaderMaterial
+  nebulaMat!: ShaderMaterial
+  introPoints: Points
+  introPos = new Float32Array()
+  introVel = new Float32Array()
+  introHome = new Float32Array()
+  fleets: Fleet[] = []
+  frags: Frag[] = []
+  enemies: Enemy[] = []
+  shots: Shot[] = []
+  booms: Boom[] = []
+  radar: CanvasRenderingContext2D
+
+  dom = {
+    intro: must<HTMLDivElement>('intro'),
+    introText: must<HTMLParagraphElement>('intro-text'),
+    title: must<HTMLDivElement>('title'),
+    hud: must<HTMLDivElement>('hud'),
+    controls: must<HTMLDivElement>('controls'),
+    pause: must<HTMLDivElement>('pause'),
+    upgrade: must<HTMLDivElement>('upgrade'),
+    gameover: must<HTMLDivElement>('gameover'),
+    fade: must<HTMLDivElement>('fade'),
+    flash: must<HTMLDivElement>('flash'),
+    grav: must<HTMLDivElement>('grav'),
+    hurt: must<HTMLDivElement>('hurt'),
+    prompt: must<HTMLParagraphElement>('prompt'),
+    toast: must<HTMLParagraphElement>('toast'),
+    lock: must<HTMLParagraphElement>('lock-hint'),
+    vis: must<HTMLDivElement>('vis'),
+    cross: must<HTMLDivElement>('crosshair'),
+    horizon: must<HTMLSpanElement>('horizon-line'),
+    easyTitle: must<HTMLInputElement>('easy-title'),
+    easyPause: must<HTMLInputElement>('set-easy'),
+    vol: must<HTMLInputElement>('set-vol'),
+    sens: must<HTMLInputElement>('set-sens'),
+    dead: must<HTMLInputElement>('set-dead'),
+    stick: must<HTMLInputElement>('set-stick'),
+    upList: must<HTMLDivElement>('up-list'),
+    upLoot: must<HTMLParagraphElement>('up-loot'),
+    upEnergy: must<HTMLParagraphElement>('up-energy'),
+    goTitle: must<HTMLHeadingElement>('go-title'),
+    goReason: must<HTMLParagraphElement>('go-reason'),
+    goScore: must<HTMLElement>('go-score'),
+    goKills: must<HTMLElement>('go-kills'),
+    goBest: must<HTMLElement>('go-best'),
+    levels: must<HTMLParagraphElement>('pa-levels'),
+    fatal: must<HTMLParagraphElement>('fatal'),
+  }
+
+  constructor() {
+    this.save = loadSave()
+    this.best = this.save.best
+    this.wins = this.save.wins
+    this.audio.setVolume(this.save.settings.volume)
+    const canvasParent = must<HTMLDivElement>('app')
+    let renderer: WebGLRenderer
+    try {
+      renderer = new WebGLRenderer({
+        antialias: false,
+        powerPreference: 'high-performance',
+        stencil: false,
+        alpha: false,
+      })
+    } catch {
+      this.dom.fatal.hidden = false
+      throw new Error('WebGL yok')
+    }
+    this.renderer = renderer
+    if (!renderer.getContext()) {
+      this.dom.fatal.hidden = false
+      throw new Error('WebGL yok')
+    }
+    renderer.outputColorSpace = SRGBColorSpace
+    renderer.toneMapping = ACESFilmicToneMapping
+    renderer.toneMappingExposure = 1.05
+    renderer.setClearColor(0x03040a, 1)
+    renderer.domElement.id = 'view'
+    renderer.domElement.tabIndex = 0
+    canvasParent.prepend(renderer.domElement)
+    this.input = new Input(renderer.domElement)
+
+    this.camera = new PerspectiveCamera(68, 1, 0.08, SKY_RADIUS * 1.2)
+    this.camera.position.set(0, 12, 86)
+
+    this.scene.add(new AmbientLight(0xc5d0e4, 0.42))
+    this.scene.add(new HemisphereLight(0x8ea0c8, 0x2a140c, 0.55))
+    const sun = new DirectionalLight(0xe7eefc, 2.35)
+    sun.position.set(48, 32, 18)
+    this.scene.add(sun)
+
+    this.buildSky()
+    this.diskMat = this.buildDisk()
+    this.scene.add(this.mapRoot)
+    this.scene.add(this.combatRoot)
+    this.combatRoot.visible = false
+    this.bhLight = new PointLight(0xff7a3c, 9000, 460, 2)
+    this.mapRoot.add(this.bhLight)
+    this.syncWalker()
+    this.sparks = new Sparks(this.mapRoot)
+    this.tracers = new Tracers(this.mapRoot)
+    const routeGeo = new BufferGeometry().setFromPoints([new Vector3(), new Vector3(0, 0, 1)])
+    const routeMat = new LineBasicMaterial({ color: 0x9adfff })
+    this.routeLine = new Line(routeGeo, routeMat)
+    this.routeLine.frustumCulled = false
+    this.routeLine.visible = false
+    this.mapRoot.add(this.routeLine)
+    this.enemyGates = Array.from({ length: 2 }, () => {
+      const mesh = buildWormhole()
+      mesh.scale.setScalar(0.48)
+      mesh.visible = false
+      this.combatRoot.add(mesh)
+      return { alive: false, pos: new Vector3(), life: 0, owner: null, to: 'kizil' as UniId, mesh, brought: false }
+    })
+    this.layoutUniverse('avlu')
+    this.showShip('earth')
+    this.visual.root.visible = false
+    this.wellMesh = this.makeWell(0xffe2b0, 4.1)
+    this.scene.add(this.wellMesh)
+    this.enemyWells = Array.from({ length: 4 }, () => {
+      const mesh = this.makeWell(0xb9a6ff, 3.1)
+      this.scene.add(mesh)
+      return { alive: false, pos: new Vector3(), life: 0, owner: null, mesh }
+    })
+    this.buildMotes()
+    this.introPoints = this.buildIntro()
+
+    this.composer = new EffectComposer(renderer)
+    this.composer.addPass(new RenderPass(this.scene, this.camera))
+    this.lensPass = new ShaderPass(LensShader)
+    this.composer.addPass(this.lensPass)
+    this.bloom = new UnrealBloomPass(new Vector2(window.innerWidth, window.innerHeight), 0.4, 0.45, 0.84)
+    this.composer.addPass(this.bloom)
+    this.composer.addPass(new OutputPass())
+    this.patchLens()
+    this.layoutUniverse(this.universeId)
+    this.applySize()
+    this.buildPools()
+    this.bindUi()
+    this.expose()
+    const radar = must<HTMLCanvasElement>('radar').getContext('2d')
+    if (!radar) throw new Error('radar yok')
+    this.radar = radar
+    this.syncSettingsUi()
+    this.dom.introText.textContent = LINES[0][1]
+    this.lineShown = 0
+    window.addEventListener('resize', () => this.applySize())
+    document.addEventListener('pointerlockchange', () => {
+      const locked = document.pointerLockElement === this.renderer.domElement
+      if (!locked && (this.mode === 'map' || this.mode === 'combat') && !this.suppressPause) this.pause()
+    })
+  }
+
+  start() {
+    let last = performance.now()
+    const frame = (now: number) => {
+      const dt = Math.min(0.05, (now - last) / 1000)
+      last = now
+      this.fps = this.fps * 0.92 + (dt > 0 ? 1 / dt : 60) * 0.08
+      if (dt > 0.022) this.slow++
+      else this.slow = Math.max(0, this.slow - 1)
+      if (this.slow > 40 && this.pr > 1.05) {
+        this.pr = 1
+        this.applySize()
+        this.slow = -400
+      }
+      this.tick(dt)
+      requestAnimationFrame(frame)
+    }
+    requestAnimationFrame(frame)
+  }
+
+  private tick(dt: number) {
+    this.clockT += dt
+    this.skipLock = Math.max(0, this.skipLock - dt)
+    this.diskTime += dt * (this.mode === 'map' ? Math.min(8, 1 / Math.max(0.08, this.tf)) : 1) * 0.35
+    for (const worm of this.wormMeshes) worm.rotation.y += dt * 0.4
+    this.starMat.uniforms.uTime.value = this.clockT
+    this.nebulaMat.uniforms.uTime.value = this.clockT
+    this.diskMat.uniforms.uTime.value = this.diskTime
+    if (this.fading) {
+      this.composer.render()
+      this.input.endFrame()
+      return
+    }
+    this.handleGlobalKeys()
+    if (this.mode === 'intro') this.updateIntro(dt)
+    else if (this.mode === 'title' || this.mode === 'gameover') this.updateTitle(dt)
+    else if (this.mode === 'select') this.updateSelect(dt)
+    else if (this.mode === 'map') this.updateMap(dt)
+    else if (this.mode === 'combat') this.updateCombat(dt)
+    else if (this.mode === 'upgrade') this.updateUpgrade()
+    this.updateBooms(dt)
+    this.applyPresentation()
+    this.updateCamera(dt)
+    // Gökyüzü sonsuz uzakta durur: uzak gezegenler küre duvarının arkasında kalmasın.
+    this.sky.position.copy(this.camera.position)
+    this.stars.position.copy(this.camera.position)
+    this.updateLens()
+    this.composer.render()
+    this.input.endFrame()
+  }
+
+  private handleGlobalKeys() {
+    if (this.input.pressed('KeyM')) this.toggleMute()
+    const controlsOpen = !this.dom.controls.classList.contains('hidden')
+    if (this.input.pressed('Escape')) {
+      if (controlsOpen) this.hideControls()
+      else if (this.mode === 'pause') this.resume()
+      else if (this.mode === 'upgrade') this.continueRun()
+      else if (this.mode === 'map' || this.mode === 'combat') this.pause()
+      else if (this.mode === 'select') this.goTitle()
+      else if (this.mode === 'intro') this.skipIntro()
+    }
+    if (this.mode === 'select' && this.dom.controls.classList.contains('hidden')) {
+      if (this.input.pressed('ArrowRight') || this.input.pressed('KeyD')) this.stepOrigin(1)
+      if (this.input.pressed('ArrowLeft') || this.input.pressed('KeyA')) this.stepOrigin(-1)
+    }
+    if (this.input.pressed('Enter')) {
+      if (controlsOpen) this.hideControls()
+      else if (this.mode === 'title' && this.skipLock <= 0) this.openSelect()
+      else if (this.mode === 'select') this.startRun()
+      else if (this.mode === 'pause') this.resume()
+      else if (this.mode === 'upgrade') this.continueRun()
+      else if (this.mode === 'gameover') this.startRun()
+    }
+    if (this.mode === 'intro' && this.input.anyPressed()) this.skipIntro()
+  }
+
+  private updateIntro(dt: number) {
+    this.introT += dt
+    this.syncLine()
+    if (this.introT > 5 && !this.bangPlayed) {
+      this.bangPlayed = true
+      this.audio.bang()
+    }
+    const flash = this.introT > 4.7 && this.introT < 6.3 ? Math.sin(clamp((this.introT - 4.7) / 1.5, 0, 1) * Math.PI) : 0
+    this.dom.flash.style.opacity = String(flash)
+    this.stepIntroParticles(dt)
+    const p1 = smoothstep(12, 24, this.introT)
+    const p2 = smoothstep(24, 36, this.introT)
+    this.camera.position.set(lerp(lerp(0, 55, p1), 140, p2), lerp(lerp(12, 30, p1), 54, p2), lerp(lerp(86, 100, p1), 130, p2))
+    this.camera.up.set(0, 1, 0)
+    this.camera.lookAt(0, 0, 0)
+    this.diskMat.uniforms.uAlpha.value = smoothstep(18, 26, this.introT)
+    if (this.introT > 37.8) this.finishIntro()
+  }
+
+  private updateTitle(dt: number) {
+    this.titleSpin += dt * 0.065
+    const a = this.titleSpin
+    this.camera.position.set(Math.cos(a) * 178, 58, Math.sin(a) * 168)
+    this.camera.up.set(0, 1, 0)
+    this.camera.lookAt(0, 2, 0)
+    this.diskMat.uniforms.uAlpha.value = 1
+    if (this.mode === 'title' && this.skipLock <= 0 && this.input.pressed('Space') && this.dom.controls.classList.contains('hidden')) {
+      this.openSelect()
+    }
+  }
+
+  titleSpin = 0.85
+
+  private updateMap(dt: number) {
+    this.updatePlanets(dt)
+    if (this.holdPose) {
+      if (this.layer !== 'foot') {
+        this.visual.root.position.copy(this.pos)
+        this.visual.root.quaternion.copy(this.quat)
+      } else this.poseWalker()
+      const sample = this.sampleTime(this.pos)
+      this.tf = sample.tf
+      this.worldScale = sample.worldScale
+      this.refreshHud()
+      return
+    }
+    this.transitionLock = Math.max(0, this.transitionLock - dt)
+    if (this.route && !this.isHome()) this.ambushCd -= dt
+    if (this.route && !this.isHome() && this.ambushCd <= 0 && this.fleets.length < 2 && this.mode === 'map') {
+      this.ambushCd = 32
+      this.raiseAmbush()
+    }
+    if (this.layer === 'foot') this.updateFoot(dt)
+    else this.flight(dt, true)
+    const sample = this.sampleTime(this.pos)
+    this.tf = sample.tf
+    this.worldScale = sample.worldScale
+    const worldDt = dt * this.worldScale
+    this.properTime += dt
+    this.coordTime += worldDt
+    this.accrueIncome(dt)
+    this.scoreTick += dt
+    if (this.scoreTick >= 3) {
+      this.scoreTick = 0
+      this.addScore(1)
+    }
+    this.grace = Math.max(0, this.grace - dt)
+    if (this.grace <= 0) this.checkBands()
+    this.updateFleets(worldDt)
+    if (this.layer === 'ship') this.updateSkirmish(dt)
+    this.updateEscorts(dt)
+    this.keepHomePatrols(dt)
+    this.updateLoot(dt)
+    this.updateOutpostGuns(dt)
+    this.updateFragments(worldDt)
+    this.updateShots(dt)
+    this.fragTimer += worldDt
+    if (this.fragTimer > 6.5 && this.frags.filter((f) => f.alive).length < 12) {
+      this.fragTimer = 0
+      this.spawnFragment()
+    }
+    if (this.layer === 'ship' && this.pos.length() > this.mapLimit) this.edgeReturn(dt)
+    this.edgeToastCd = Math.max(0, this.edgeToastCd - dt)
+    if (this.hazards()) return
+    if (this.tipsOn) {
+      this.tipT -= dt
+      if (this.tipT <= 0 && this.tipI < TIPS.length) {
+        this.toast(TIPS[this.tipI])
+        this.tipI++
+        this.tipT = 6.2
+      }
+    }
+    this.pollGear()
+    if (this.layer === 'ship' && this.input.pressed('KeyF')) {
+      const near = this.nearestFleet(140)
+      if (near && near.fleet.state !== 'leave') this.beginCombat(near.fleet)
+    }
+    if (this.input.pressed('KeyU')) this.openUpgrades()
+    if (this.layer === 'ship' && this.input.pressed('KeyC')) this.toggleCam()
+    if (this.input.pressed('KeyN')) this.toggleRadar()
+    if (this.layer === 'ship') this.useAbilities(dt)
+    else {
+      this.cd1 = Math.max(0, this.cd1 - dt)
+      this.cd2 = Math.max(0, this.cd2 - dt)
+    }
+    this.updateWell(dt)
+    this.audio.setMood(this.vis, this.tf)
+    this.refreshHud()
+  }
+
+  private updateCombat(dt: number) {
+    if (this.holdPose) {
+      this.visual.root.position.copy(this.pos)
+      this.visual.root.quaternion.copy(this.quat)
+      for (const e of this.enemies) {
+        e.root.position.copy(e.pos)
+        e.root.quaternion.copy(e.quat)
+      }
+      this.refreshHud()
+      return
+    }
+    this.combatTime += dt
+    this.flight(dt, false)
+    this.tf = 1
+    this.worldScale = 1
+    this.properTime += dt
+    this.coordTime += dt
+    this.scoreTick += dt
+    if (this.scoreTick >= 3) {
+      this.scoreTick = 0
+      this.addScore(1)
+    }
+    if (this.pos.length() > 260) {
+      const pull = this.pos.length() - 260
+      this.vel.addScaledVector(this.pos, (-pull * 0.8 * dt) / this.pos.length())
+    }
+    for (const e of this.enemies) this.updateEnemy(e, dt)
+    this.updateEscorts(dt)
+    this.updateShots(dt)
+    this.updateGates(dt)
+    if (this.input.pressed('KeyC')) this.toggleCam()
+    if (this.input.pressed('KeyF') && this.canFlee()) this.flee()
+    this.pollGear()
+    this.useAbilities(dt)
+    this.updateWell(dt)
+    this.audio.setMood(this.vis, 1)
+    this.refreshHud()
+  }
+
+  private updateUpgrade() {
+    if (this.dom.controls.classList.contains('hidden')) {
+      const keys: UpId[] = ['hull', 'shield', 'weapon', 'engine', 'stealth']
+      keys.forEach((id, i) => {
+        if (this.input.pressed(`Digit${i + 1}`)) this.buy(id)
+      })
+    }
+    this.refreshHud()
+  }
+
+  private flight(dt: number, gravity: boolean) {
+    this.steer(dt)
+    if (this.forceAim && this.enemies.length) this.aimAssist(dt)
+    const axes = this.axes()
+    const move = Math.abs(axes.f) + Math.abs(axes.s) * 0.75 + Math.abs(axes.u) * 0.75
+    this.boosting = axes.boost && move > 0.04
+    const thrust = 62 * this.engineMul * (this.boosting ? 2.35 : 1)
+    const strafe = 40 * this.engineMul * (axes.boost ? 1.35 : 1)
+    shipForward(this.quat, vA)
+    shipRight(this.quat, vB)
+    shipUp(this.quat, vC)
+    const coast = move > 0.04 ? 0.05 : 0.2
+    this.vel.multiplyScalar(1 - dt * coast)
+    this.vel.addScaledVector(vA, axes.f * thrust * 0.9 * dt)
+    this.vel.addScaledVector(vB, axes.s * strafe * 0.9 * dt)
+    this.vel.addScaledVector(vC, axes.u * strafe * 0.9 * dt)
+    if (gravity) this.pullGravity(dt)
+    this.powerT = Math.max(0, this.powerT - dt)
+    this.applyHeat(dt)
+    const cap = this.speedCap()
+    if (this.vel.length() > cap) this.vel.setLength(cap)
+    this.pos.addScaledVector(this.vel, dt)
+    this.visual.root.position.copy(this.pos)
+    this.visual.root.quaternion.copy(this.quat)
+
+    const firing = (this.input.mouseDown || this.input.touchFire || this.autoFire) && this.fireCd <= 0
+    let gain = 0
+    if (move > 0.04) gain += 16 * move * (this.boosting ? 2.15 : 1)
+    if (firing) gain += this.weaponNoise()
+    gain *= this.stealthMul
+    if (this.cloakT > 0) {
+      this.cloakT -= dt
+      gain *= 0.12
+      this.vis = Math.max(0, this.vis - 12 * dt)
+    }
+    if (gain > 0.01) this.vis = Math.min(100, this.vis + gain * dt)
+    else this.vis = Math.max(0, this.vis - 5.5 * dt)
+
+    this.fireCd = Math.max(0, this.fireCd - dt)
+    if (firing) this.firePrimary()
+    this.hitCd = Math.max(0, this.hitCd - dt)
+    if (this.hitCd <= 0) this.shield = Math.min(this.shieldMax, this.shield + this.regenRate() * dt)
+    if (this.isHome() && this.hitCd <= 0) this.hull = Math.min(this.hullMax, this.hull + 1.3 * dt)
+    this.shieldFlash = Math.max(0, this.shieldFlash - dt * 2.6)
+    this.visual.shieldMat.uniforms.uFlash.value = this.shieldFlash
+    this.visual.shieldMat.uniforms.uLevel.value = this.shieldMax > 0 ? this.shield / this.shieldMax : 0
+    const throttle = clamp(move, 0, 1)
+    const showPlume = throttle > 0.05 && this.camMode !== 'cockpit'
+    this.visual.plumes.forEach((plume, i) => {
+      plume.visible = showPlume
+      plume.scale.y = 0.2 + throttle * (this.boosting ? 1.9 : 1.05)
+      this.visual.plumeMats[i].opacity = showPlume ? 0.28 + throttle * 0.55 : 0
+      this.visual.plumeMats[i].color.set(this.boosting ? 0xfff1e2 : 0xffc49a)
+    })
+    this.visual.engineLight.intensity = showPlume ? (this.boosting ? 12 : 5) * throttle : 0
+    this.muzzleT -= dt
+    const muz = this.visual.muzzle.material as SpriteMaterial
+    this.visual.muzzle.visible = this.muzzleT > 0
+    muz.opacity = this.muzzleT > 0 ? 0.95 : 0
+    this.audio.setThrust(throttle * (this.boosting ? 1.45 : 1))
+    if (this.hull < 30 && !this.hullWarned) {
+      this.hullWarned = true
+      this.toast('Gövde kritik.')
+    }
+    if (this.hull > 55) this.hullWarned = false
+  }
+
+  private steer(dt: number) {
+    const sens = 0.00185 * this.save.settings.sens
+    const follow = 1 - Math.exp(-12 * dt)
+    this.yawSm = lerp(this.yawSm, -this.input.mouseX * sens, follow)
+    this.pitchSm = lerp(this.pitchSm, -this.input.mouseY * sens, follow)
+    const pitch = this.pitchSm
+    const yaw = this.yawSm
+    let roll = 0
+    if (this.input.down('KeyQ') || this.input.touchRollL) roll += 1.55 * dt
+    if (this.input.down('KeyE') || this.input.touchRollR) roll -= 1.55 * dt
+    if (this.save.settings.easy) {
+      qA.setFromAxisAngle(AXIS_Y, yaw)
+      this.quat.premultiply(qA)
+      qA.setFromAxisAngle(AXIS_X, pitch)
+      this.quat.multiply(qA)
+      // Kolay modda burun ~80°'den fazla dikleşmez: takla yok, ters dönme yok.
+      shipForward(this.quat, vF)
+      if (Math.abs(vF.y) > 0.985 && Math.sign(vF.y) === Math.sign(pitch)) {
+        qA.setFromAxisAngle(AXIS_X, -pitch)
+        this.quat.multiply(qA)
+      }
+      levelWings(this.quat, dt, 8)
+    } else {
+      qA.setFromAxisAngle(AXIS_Y, yaw)
+      this.quat.multiply(qA)
+      qA.setFromAxisAngle(AXIS_X, pitch)
+      this.quat.multiply(qA)
+      qA.setFromAxisAngle(AXIS_Z, roll)
+      this.quat.multiply(qA)
+      levelWings(this.quat, dt, 2.3)
+    }
+    if (this.enemies.length && !this.forceAim) this.softAim(dt)
+    if (this.input.down('KeyR')) this.stabilizeT = 1.15
+    if (this.stabilizeT > 0) {
+      this.stabilizeT -= dt
+      stabilizeFull(this.quat, dt)
+    }
+    this.quat.normalize()
+  }
+
+  private aimAssist(dt: number) {
+    const target = this.enemies.find((e) => e.alive)
+    if (!target) return
+    const dist = vA.subVectors(target.pos, this.pos).length()
+    vB.copy(target.pos).addScaledVector(target.vel, dist / 215)
+    vC.subVectors(vB, this.pos)
+    if (vC.lengthSq() < 1e-6) return
+    vC.normalize()
+    quatFromForward(qA, vC)
+    this.quat.slerp(qA, 1 - Math.exp(-14 * dt))
+  }
+
+  private softAim(dt: number) {
+    shipForward(this.quat, vA)
+    let best: Enemy | null = null
+    let bestDot = 0.95
+    for (const enemy of this.enemies) {
+      if (!enemy.alive) continue
+      vB.subVectors(enemy.pos, this.pos)
+      const dist = vB.length()
+      if (dist > 170 || dist < 0.5) continue
+      vB.multiplyScalar(1 / dist)
+      const dot = vA.dot(vB)
+      if (dot > bestDot) {
+        bestDot = dot
+        best = enemy
+      }
+    }
+    this.lockTarget = best
+    if (!best) return
+    vC.subVectors(best.pos, this.pos).normalize()
+    quatFromForward(qA, vC)
+    this.quat.slerp(qA, 1 - Math.exp(-2.2 * dt))
+  }
+
+  /** Yerinde uzay savaşı: canlı düşman gemisi var mı. */
+  private fighting() {
+    return this.enemies.some((e) => e.alive)
+  }
+
+  private isHome() {
+    return this.universeId === homeSystem(this.originId)
+  }
+
+  private foreignHome(id: UniId) {
+    if (id === homeSystem(this.originId)) return false
+    return ORIGINS.some((origin) => homeSystem(origin.id) === id)
+  }
+
+  private raiseAmbush() {
+    this.ambushes += 1
+    this.ambushCd = 32
+    const at = this.pos.clone().add(new Vector3(36, 8, -28))
+    this.spawnFleet(2, 1, at, 'hunt')
+    this.toast('Pusu. Bu sistemin avcıları yola çıktı.')
+  }
+
+  /** Kendi ekseninde dönüş: yüzey hızı sabit (~2,4 birim/sn). Sabit açısal hız büyük gezegenlerde
+   * yüzeyi (ve üstündeki karakolları) saniyede 30–60 birim akıtıyordu. */
+  private spinRateOf(radius: number) {
+    return Math.min(0.12, 2.4 / Math.max(1, radius))
+  }
+
+  private updatePlanets(dt: number) {
+    for (const planet of this.planets) {
+      // Üstünde yürüdüğün gezegen kendi ekseninde dönmez: üs, taretler ve yürüyüş aynı zeminde kalır.
+      const standing = this.layer === 'foot' && this.footPlanet === planet
+      if (!standing) planet.spin += dt * planet.spinRate
+      const a = this.clockT * planet.rate
+      const x = planet.anchor.x
+      const z = planet.anchor.z
+      const c = Math.cos(a)
+      const s = Math.sin(a)
+      planet.mesh.position.set(x * c - z * s, planet.anchor.y, x * s + z * c)
+      planet.mesh.rotation.y = planet.spin
+    }
+  }
+
+  private stepRig(rig: Rig, speed: number, jumping: boolean, punch: number) {
+    const moving = speed > 0.25 && !jumping
+    const t = this.clockT + (rig.root.id % 17) * 0.37 // her gövde biraz farklı fazda
+    const st = rig.style
+    const freq = st === 'waddle' ? 3.4 : st === 'hop' ? 6.5 : st === 'purple' ? 4.6 : st === 'stalk' ? 2.8 : st === 'float' ? 3 : 8
+    const amp = st === 'waddle' ? 0.38 : st === 'hop' ? 1.05 : st === 'stalk' ? 0.55 : st === 'float' ? 0.22 : 0.72
+    const swing = moving ? Math.sin(t * freq) * amp : 0
+    rig.legL.rotation.x = jumping ? -0.95 : swing
+    rig.legR.rotation.x = jumping ? -0.95 : -swing
+    rig.legL.rotation.z = st === 'waddle' ? 0.4 : 0
+    rig.legR.rotation.z = st === 'waddle' ? -0.4 : 0
+    const punchK = punch > 0 ? Math.sin(clamp(1 - punch / 0.36, 0, 1) * Math.PI) : 0
+    const reach = st === 'stalk' ? 0.35 : 0 // Gölge kollarını hep biraz önde tutar
+    rig.armL.rotation.x = jumping ? -1.2 : -swing * 0.8 - reach
+    rig.armR.rotation.x = punchK > 0.04 ? -1.6 * punchK : jumping ? -1.2 : swing * 0.8 - reach
+    rig.head.rotation.x = jumping ? -0.25 : 0
+    rig.head.rotation.z = (st === 'waddle' || st === 'purple') && moving ? Math.sin(t * freq) * 0.18 : 0
+    const hips = rig.hips
+    if (hips) {
+      const bounce = Math.abs(Math.sin(t * freq))
+      let y = FEET
+      if (st === 'hop') y += moving ? bounce * 0.3 : Math.abs(Math.sin(t * 2.2)) * 0.04
+      else if (st === 'float') y += 0.26 + Math.sin(t * 2.1) * 0.08
+      else if (moving) y += bounce * (st === 'stalk' ? 0.05 : 0.06)
+      hips.position.y = y
+      hips.rotation.x = st === 'stalk' ? 0.14 + (moving ? 0.08 : 0) : 0
+      hips.rotation.z = st === 'waddle' && moving ? Math.sin(t * freq) * 0.12 : 0
+      const breathe = 1 + Math.sin(t * 2.4) * 0.025
+      hips.scale.set(1, breathe, 1)
+    }
+    if (rig.wiggle) {
+      rig.wiggle.forEach((obj, k) => {
+        if (obj.userData.wz === undefined) obj.userData.wz = obj.rotation.z
+        obj.rotation.z = (obj.userData.wz as number) + Math.sin(t * (moving ? 7 : 3) + k * 1.3) * (moving ? 0.22 : 0.1)
+      })
+    }
+  }
+
+
+  private waypoint(): Vector3 | null {
+    if (!this.route) return null
+    if (this.route.system === this.universeId) {
+      if (this.route.kind === 'planet') {
+        const planet = this.planets.find((p) => p.def.id === this.route?.id)
+        return planet ? planet.pos : null
+      }
+      const hole = this.holes.find((h) => h.kind === 'worm' && h.to === (this.route?.id as UniId))
+      return hole ? hole.pos : null
+    }
+    const next = this.nextGate(this.universeId, this.route.system)
+    if (!next) return null
+    const hole = this.holes.find((h) => h.kind === 'worm' && h.to === next)
+    return hole ? hole.pos : null
+  }
+
+  private nextGate(from: UniId, goal: UniId): UniId | null {
+    const queue: { id: UniId; via: UniId | null }[] = [{ id: from, via: null }]
+    const seen = new Set<UniId>([from])
+    while (queue.length) {
+      const cur = queue.shift()
+      if (!cur) break
+      const links = UNIVERSES[cur.id].holes.filter((h) => h.kind === 'worm' && h.to)
+      for (const link of links) {
+        const to = link.to as UniId
+        if (seen.has(to)) continue
+        if (to === goal) return cur.id === from ? to : cur.via
+        seen.add(to)
+        queue.push({ id: to, via: cur.id === from ? to : cur.via })
+      }
+    }
+    return null
+  }
+
+  private paintRoute() {
+    const spot = this.waypoint()
+    const geo = this.routeLine.geometry as BufferGeometry
+    if (!spot || this.mode !== 'map') {
+      this.routeLine.visible = false
+      this.domSet('route-hint', '')
+      return
+    }
+    this.routeLine.visible = true
+    const pos = geo.getAttribute('position') as BufferAttribute
+    pos.setXYZ(0, this.pos.x, this.pos.y, this.pos.z)
+    pos.setXYZ(1, spot.x, spot.y, spot.z)
+    pos.needsUpdate = true
+    const route = this.route
+    let name: string
+    if (route && route.system === this.universeId) {
+      name = route.kind === 'planet' ? (this.planets.find((p) => p.def.id === route.id)?.def.name ?? route.id) : `eşik → ${UNIVERSES[route.id as UniId]?.name ?? route.id}`
+    } else {
+      const hops = route ? this.hopsTo(route.system) : 0
+      name = `${UNIVERSES[route?.system ?? this.universeId].name} (${hops} kapı) · sıradaki eşik → ${UNIVERSES[this.nextGate(this.universeId, route?.system ?? this.universeId) ?? this.universeId].name}`
+    }
+    this.domSet('route-hint', `Rota · ${name} · ${fmt(this.pos.distanceTo(spot))}`)
+  }
+
+  private paintBeacons() {
+    const host = document.getElementById('beacons')
+    if (!host) return
+    host.innerHTML = ''
+    if (this.mode !== 'map' && this.mode !== 'combat') return
+    const marks: { name: string; pos: Vector3 }[] = []
+    for (const planet of this.planets) {
+      if (planet.def.heat || planet === this.footPlanet) continue // üstünde durduğun gezegenin etiketi gereksiz
+      marks.push({ name: planet.def.name, pos: planet.pos })
+    }
+    for (const hole of this.holes) {
+      if (hole.kind === 'worm' && hole.to) marks.push({ name: UNIVERSES[hole.to].name, pos: hole.pos })
+    }
+    const phone = window.innerWidth <= 820 || window.innerHeight <= 520
+    const portrait = phone && window.innerHeight > window.innerWidth
+    let shown = 0
+    for (const mark of marks) {
+      if (shown >= (phone ? 3 : 5)) break
+      const p = mark.pos.clone().project(this.camera)
+      const inView = p.z < 1 && Math.abs(p.x) < 0.82 && Math.abs(p.y) < 0.78
+      if (inView) continue
+      let x = 50 + p.x * 42
+      let y = 50 - p.y * 42
+      if (p.z > 1) {
+        x = 100 - x
+        y = 100 - y
+      }
+      // Kenar etiketleri HUD'un üstüne binmesin. Telefonda üstte durum blokları, altta kumandalar var.
+      if (portrait) {
+        x = clamp(x, 14, 86)
+        y = clamp(y, 24, 62)
+      } else if (phone) {
+        x = clamp(x, 30, 70)
+        y = clamp(y, 30, 66)
+      } else {
+        x = clamp(x, 6, 94)
+        y = clamp(y, 16, 74)
+        if (x < 14 && y < 24) y = 24
+      }
+      const dy = mark.pos.y - this.pos.y
+      const chip = document.createElement('div')
+      chip.className = 'beacon'
+      chip.style.left = `${x}%`
+      chip.style.top = `${y}%`
+      chip.textContent = `${dy > 40 ? '▲ ' : dy < -40 ? '▼ ' : ''}${mark.name} ${fmt(this.pos.distanceTo(mark.pos))}`
+      host.append(chip)
+      shown += 1
+    }
+  }
+
+  private paintAttitude() {
+    shipForward(this.quat, vA)
+    const heading = Math.round(((Math.atan2(vA.x, -vA.z) * 180) / Math.PI + 360) % 360)
+    this.domSet('heading', `Yön ${heading}°`)
+  }
+
+  private regenRate() {
+    const base = this.regen * (this.isHome() ? 2.8 : 1) * (1 + this.colonyBonus())
+    return this.powerT > 0 ? base * 1.15 : base
+  }
+
+  private threatMul() {
+    const ramp = smoothstep(0, 80, this.properTime)
+    const eased = lerp(0.58, 0.84, ramp)
+    return eased * (this.isHome() ? 0.82 : 1.18)
+  }
+
+  private applyHeat(dt: number) {
+    this.heat = 0
+    if (this.universeId !== 'gunes' || this.layer === 'foot') return
+    const sun = this.planets.find((p) => p.def.heat)
+    if (!sun) return
+    const alt = this.pos.distanceTo(sun.pos) - sun.def.radius
+    const zone = sun.def.radius * 3.08 // eski oran: 78 yarıçapta 240 birim
+    if (alt > zone) return
+    const near = clamp((zone - alt) / (zone * 0.83), 0, 1)
+    this.heat = near * near
+    const dps = this.heat * 36
+    if (dps > 0.4 && this.mode === 'map') this.hurtPlayer(dps * dt, true)
+  }
+
+  private axes() {
+    const i = this.input
+    let f = (i.down('KeyW') || i.down('ArrowUp') ? 1 : 0) - (i.down('KeyS') || i.down('ArrowDown') ? 1 : 0)
+    let s = (i.down('KeyD') || i.down('ArrowRight') ? 1 : 0) - (i.down('KeyA') || i.down('ArrowLeft') ? 1 : 0)
+    let u = (i.down('Space') || i.touchUp ? 1 : 0) - (i.down('ControlLeft') || i.down('ControlRight') || i.touchDown ? 1 : 0)
+    const dead = this.save.settings.stickDead
+    const stick = (v: number) => {
+      const a = Math.abs(v)
+      if (a < dead) return 0
+      return Math.sign(v) * clamp(((a - dead) / (1 - dead)) * this.save.settings.stickSens, 0, 1)
+    }
+    const sy = stick(i.stickY)
+    const sx = stick(i.stickX)
+    if (sy) f = clamp(f + sy, -1, 1)
+    if (sx) s = clamp(s + sx, -1, 1)
+    const boost = i.down('ShiftLeft') || i.down('ShiftRight') || i.touchBoost
+    return { f, s, u, boost }
+  }
+
+  private checkBands() {
+    if (this.vis < 12) this.bandFired = [false, false, false]
+    BANDS.forEach((band, i) => {
+      if (this.bandFired[i] || this.vis < band.at || this.fleets.length >= 3) return
+      this.bandFired[i] = true
+      if (this.isHome()) {
+        // Ev sistemi öğrenme alanı: gürültü yalnız küçük gemileri çeker.
+        const fleet = this.spawnFleet(Math.min(2, band.n), 0, undefined, 'hunt')
+        fleet.small = true
+        return
+      }
+      this.spawnFleet(band.n, band.threat, undefined, 'hunt')
+    })
+  }
+
+  private updateFleets(worldDt: number) {
+    const aim = this.fleetAim()
+    for (let i = this.fleets.length - 1; i >= 0; i--) {
+      const fleet = this.fleets[i]
+      if (fleet.around && fleet.offset) {
+        fleet.center.copy(fleet.around.pos).add(fleet.offset)
+        if (fleet.state === 'search' && this.layer === 'foot') fleet.lastKnown.copy(fleet.center)
+      }
+      const dist = fleet.pos.distanceTo(aim)
+      const sees = this.vis > 18 || dist < 64
+      if (fleet.state === 'patrol') {
+        fleet.angle += worldDt * 0.12
+        vD.set(
+          fleet.center.x + Math.cos(fleet.angle) * fleet.orbit,
+          fleet.center.y,
+          fleet.center.z + Math.sin(fleet.angle) * fleet.orbit,
+        )
+        this.seekFleet(fleet, vD, worldDt, 16)
+        if (sees) fleet.state = 'hunt'
+      } else if (fleet.state === 'hunt') {
+        if (sees) fleet.lastKnown.copy(aim)
+        this.seekFleet(fleet, fleet.lastKnown, worldDt, 22 + fleet.threat * 8)
+        if (!sees && fleet.pos.distanceTo(fleet.lastKnown) < 18) {
+          fleet.state = 'search'
+          fleet.searchLeft = 14
+        }
+      } else if (fleet.state === 'search') {
+        fleet.searchLeft -= worldDt
+        fleet.angle += worldDt * 0.7
+        vD.set(
+          fleet.lastKnown.x + Math.cos(fleet.angle) * 22,
+          fleet.lastKnown.y,
+          fleet.lastKnown.z + Math.sin(fleet.angle) * 22,
+        )
+        this.seekFleet(fleet, vD, worldDt, 16)
+        if (sees) fleet.state = 'hunt'
+        if (fleet.searchLeft <= 0) fleet.state = 'leave'
+      } else {
+        vD.copy(fleet.pos)
+        if (vD.lengthSq() < 1) vD.set(0, 0, 1)
+        vD.setLength(800)
+        this.seekFleet(fleet, vD, worldDt, 30)
+        if (fleet.pos.length() > 640 || dist > 520) this.removeFleet(fleet)
+      }
+      const now = fleet.pos.distanceTo(this.pos)
+      if (now < 30 && fleet.state !== 'leave' && fleet.state !== 'patrol' && this.mode === 'map' && this.layer === 'ship' && !this.fading) {
+        this.beginCombat(fleet)
+        return
+      }
+    }
+  }
+
+  /** Gemiler ve filolar gezegenlerin içinden geçmez; yüzeyin `pad` kadar dışına itilir. */
+  private keepOutOfPlanets(pos: Vector3, pad: number) {
+    for (const planet of this.planets) {
+      const min = planet.def.radius + pad
+      const d = pos.distanceTo(planet.pos)
+      if (d >= min) continue
+      if (d < 1e-3) pos.y += min
+      else pos.sub(planet.pos).multiplyScalar(min / d).add(planet.pos)
+    }
+  }
+
+  private seekFleet(fleet: Fleet, target: Vector3, worldDt: number, speed: number) {
+    const tx = target.x
+    const ty = target.y
+    const tz = target.z
+    vA.set(tx - fleet.pos.x, ty - fleet.pos.y, tz - fleet.pos.z)
+    const d = vA.length()
+    if (d > 0.6) vA.multiplyScalar(1 / d)
+    else vA.set(0, 0, 0)
+    for (const h of this.holes) {
+      if (h.kind !== 'hole') continue
+      const dist = fleet.pos.distanceTo(h.pos)
+      if (dist < h.rs * 2.6) {
+        vB.subVectors(fleet.pos, h.pos).normalize()
+        vA.addScaledVector(vB, 1.6)
+      }
+    }
+    if (vA.lengthSq() > 0.0001) vA.normalize()
+    vA.multiplyScalar(speed)
+    fleet.vel.lerp(vA, 1 - Math.exp(-1.7 * Math.max(worldDt, 0.001)))
+    fleet.pos.addScaledVector(fleet.vel, worldDt)
+    this.keepOutOfPlanets(fleet.pos, 40)
+    if (fleet.vel.lengthSq() > 0.5) {
+      vB.copy(fleet.vel).normalize()
+      quatFromForward(fleet.root.quaternion, vB)
+    }
+    fleet.root.position.copy(fleet.pos)
+  }
+
+  private updateFragments(worldDt: number) {
+    const reach = 8 + this.vel.length() * worldDt * 0.25 + this.vel.length() * 0.016
+    for (const frag of this.frags) {
+      if (!frag.alive) continue
+      frag.angle += worldDt * frag.spin
+      const bob = Math.sin(this.coordTime * 0.8 + frag.phase) * 1.4
+      frag.mesh.position.set(Math.cos(frag.angle) * frag.radius, frag.y + bob, Math.sin(frag.angle) * frag.radius)
+      frag.mesh.rotation.y = this.coordTime * 0.5 + frag.phase
+      if (frag.mesh.position.distanceTo(this.pos) < reach) {
+        frag.alive = false
+        frag.mesh.visible = false
+        this.energy += 8
+        this.addScore(12)
+        this.audio.collect()
+        this.spawnBoom(frag.mesh.position, 0.45, 0xffc48a)
+      }
+    }
+  }
+
+  private updateEnemy(e: Enemy, dt: number) {
+    if (!e.alive) return
+    if (e.stun > 0) {
+      e.stun -= dt
+      e.vel.multiplyScalar(0.9)
+      e.root.position.copy(e.pos)
+      this.paintEnemyBar(e)
+      return
+    }
+    vA.subVectors(this.pos, e.pos)
+    const dist = Math.max(0.001, vA.length())
+    vB.copy(vA).multiplyScalar(1 / dist)
+    e.strafeT -= dt
+    if (e.strafeT <= 0) {
+      e.strafe = Math.random() < 0.5 ? -1 : 1
+      e.strafeT = 1.2 + Math.random() * 1.8
+    }
+    vC.crossVectors(vB, WORLD_UP)
+    if (vC.lengthSq() < 1e-4) vC.set(1, 0, 0)
+    vC.normalize()
+    const scared = e.hull < e.hullMax * 0.34
+    if (scared) vD.copy(vB).multiplyScalar(-1).addScaledVector(vC, e.strafe * 1.15)
+    else if (dist > 74) vD.copy(vB).addScaledVector(vC, e.strafe * 0.7)
+    else if (dist < 22) vD.copy(vB).multiplyScalar(-1).addScaledVector(vC, e.strafe)
+    else vD.copy(vC).multiplyScalar(e.strafe).addScaledVector(vB, (dist - 46) * 0.035)
+    if (vD.lengthSq() < 1e-6) vD.copy(vB)
+    vD.normalize()
+    const uniMul = UNIVERSES[this.universeId].enemyMul
+    e.vel.addScaledVector(vD, (40 + e.threat * 6) * uniMul * dt)
+    const maxS = 34 + e.threat * 6
+    if (e.vel.length() > maxS) e.vel.setLength(maxS)
+    e.vel.multiplyScalar(Math.max(0, 1 - dt * 0.12))
+    e.pos.addScaledVector(e.vel, dt)
+    const keep = e.giant ? 16 : 7
+    if (dist < keep) e.pos.addScaledVector(vB, -(keep - dist) * 0.45)
+    this.keepOutOfPlanets(e.pos, e.giant ? 14 : 6)
+    quatFromForward(e.quat, vD)
+    e.root.position.copy(e.pos)
+    if (e.flashT > 0) {
+      e.flashT -= dt
+      e.root.position.x += Math.sin(this.clockT * 48) * 0.18
+      e.root.position.y += Math.cos(this.clockT * 53) * 0.12
+    }
+    e.root.quaternion.copy(e.quat)
+    this.paintEnemyBar(e)
+    e.cool -= dt
+    shipForward(e.quat, vE)
+    if (e.cool <= 0 && dist < 165 && (e.attack === 'well' || e.attack === 'gate' || vE.dot(vB) > 0.9)) {
+      this.enemyShoot(e, dist)
+      const pause = e.attack === 'well' || e.attack === 'gate' ? 5.1 : e.attack === 'homing' ? 2.1 : e.attack === 'goo' ? 2.4 : 1.3
+      e.cool = (pause + Math.random() * 0.6) * (e.giant ? 1.45 : 1) - e.threat * 0.08
+    }
+  }
+
+  private paintEnemyBar(e: Enemy) {
+    if (!e.bar) return
+    const ctx = e.bar.userData.ctx as CanvasRenderingContext2D | null
+    const tex = e.bar.userData.tex as { needsUpdate: boolean } | undefined
+    if (!ctx || !tex) return
+    paintBar(ctx, tex, e.hull / Math.max(1, e.hullMax), e.shield / Math.max(1, e.shieldMax))
+  }
+
+  private enemyShoot(e: Enemy, dist: number) {
+    if (e.attack === 'well') {
+      this.openEnemyWell(e)
+      return
+    }
+    if (e.attack === 'gate') {
+      this.openEnemyGate(e)
+      return
+    }
+    const miss = lerp(1.45, 1.05, smoothstep(0, 80, this.properTime))
+    const err = (e.attack === 'bolt' ? 7.5 - e.threat * 1.2 : 2.4) * miss
+    const fan = e.giant && (e.attack === 'bolt' || e.attack === 'homing') ? 3 : 1
+    const dmg = (e.attack === 'goo' ? 6 : 8 + e.threat * 3) * (e.giant ? 1.45 : 1) * (e.small ? 0.45 : 1) * this.threatMul()
+    for (let i = 0; i < fan; i++) {
+      vF.copy(this.pos).addScaledVector(this.vel, e.attack === 'bolt' ? dist / 128 : 0)
+      vF.x += (Math.random() - 0.5) * err + (i - (fan - 1) / 2) * 6
+      vF.y += (Math.random() - 0.5) * err * 0.6
+      vF.z += (Math.random() - 0.5) * err
+      vG.subVectors(vF, e.pos)
+      if (vG.lengthSq() < 1e-4) continue
+      vG.normalize()
+      this.spawnShot(false, e.pos, vG, dmg, e.attack === 'homing' || e.attack === 'goo' ? e.attack : 'bolt')
+    }
+    this.audio.laser(true)
+  }
+
+  private openEnemyWell(e: Enemy) {
+    const slot = this.enemyWells.find((well) => !well.alive)
+    if (!slot) return
+    vA.subVectors(this.pos, e.pos)
+    if (vA.lengthSq() < 1) vA.set(0, 0, -1)
+    vA.normalize()
+    slot.owner = e
+    slot.pos.copy(e.pos).addScaledVector(vA, 18)
+    slot.life = 3.4
+    slot.alive = true
+    slot.mesh.visible = true
+    slot.mesh.position.copy(slot.pos)
+    this.audio.warning()
+  }
+
+  private updateShots(dt: number) {
+    for (const shot of this.shots) {
+      if (!shot.alive) continue
+      shot.prev.copy(shot.pos)
+      shot.pos.addScaledVector(shot.vel, dt)
+      shot.age += dt
+      if (shot.kind === 'rocket' || (!shot.friendly && (shot.kind === 'homing' || shot.kind === 'goo'))) {
+        let target: Enemy | null = null
+        if (shot.friendly) {
+          let bestD = 240
+          for (const e of this.enemies) {
+            if (!e.alive) continue
+            const d = e.pos.distanceTo(shot.pos)
+            if (d < bestD) {
+              target = e
+              bestD = d
+            }
+          }
+        }
+        if (shot.friendly && target) vB.subVectors(target.pos, shot.pos)
+        else if (!shot.friendly) vB.subVectors(this.pos, shot.pos)
+        else vB.set(0, 0, 0)
+        if (vB.lengthSq() > 1) {
+          vB.normalize()
+          const steer = shot.kind === 'goo' ? 26 : shot.kind === 'rocket' ? 36 : 48
+          shot.vel.addScaledVector(vB, steer * dt)
+          const cap = shot.kind === 'goo' ? 46 : shot.kind === 'rocket' ? 84 : 96
+          if (shot.vel.length() > cap) shot.vel.setLength(cap)
+        }
+      }
+      shot.mesh.position.copy(shot.pos)
+      if (shot.vel.lengthSq() > 0.01) shot.mesh.lookAt(vA.copy(shot.pos).add(shot.vel))
+      const life = shot.kind === 'goo' ? 3.5 : shot.kind === 'homing' || shot.kind === 'rocket' ? 2.6 : shot.kind === 'pellet' ? 0.62 : shot.kind === 'laser' || shot.kind === 'chain' ? 0.72 : shot.kind === 'plasma' ? 1.5 : 1.45
+      if (shot.age > life) {
+        this.killShot(shot)
+        continue
+      }
+      if (shot.age < 0.04) continue
+      if (shot.friendly && this.hitOutpost(shot)) {
+        this.killShot(shot)
+        continue
+      }
+      if (shot.friendly && this.enemies.length) {
+        let hit: Enemy | null = null
+        let weak = false
+        let best = 99
+        for (const e of this.enemies) {
+          if (!e.alive) continue
+          const bodyR = e.giant ? 2.05 * e.scale : 2.55
+          const bodyD = distPointSeg(e.pos, shot.prev, shot.pos)
+          if (e.weak) {
+            e.root.updateWorldMatrix(true, true)
+            e.weak.getWorldPosition(vC)
+            const weakD = distPointSeg(vC, shot.prev, shot.pos)
+            if (weakD < 0.7 * e.scale && weakD < best) {
+              hit = e
+              weak = true
+              best = weakD
+              continue
+            }
+          }
+          if (!weak && bodyD < bodyR && bodyD < best) {
+            hit = e
+            weak = false
+            best = bodyD
+          }
+        }
+        if (hit) {
+          this.hurtEnemy(hit, shot.dmg * (weak ? 2.7 : 1))
+          if (shot.kind === 'plasma') {
+            const splash = this.originId === 'gliese' ? 8 : 6
+            for (const other of this.enemies) {
+              if (!other.alive || other === hit) continue
+              if (other.pos.distanceTo(hit.pos) < splash) this.hurtEnemy(other, shot.dmg * 0.45)
+            }
+          }
+          if (shot.kind === 'chain' && shot.hops > 1) {
+            let next: Enemy | null = null
+            let nextD = 42
+            for (const other of this.enemies) {
+              if (!other.alive || other === hit) continue
+              const d = other.pos.distanceTo(hit.pos)
+              if (d < nextD) {
+                next = other
+                nextD = d
+              }
+            }
+            if (next) {
+              vG.subVectors(next.pos, hit.pos)
+              if (vG.lengthSq() > 0.01) {
+                vG.normalize()
+                this.spawnShot(true, hit.pos, vG, shot.dmg * 0.72, 'chain', shot.hops - 1)
+              }
+            }
+          }
+          this.killShot(shot)
+        }
+      } else if (!shot.friendly && distPointSeg(this.pos, shot.prev, shot.pos) < (shot.kind === 'goo' ? 2.3 : 1.85)) {
+        this.hurtPlayer(shot.dmg)
+        if (shot.kind === 'goo') this.vel.multiplyScalar(0.62)
+        this.killShot(shot)
+      }
+    }
+  }
+
+  private hurtPlayer(dmg: number, quiet = false) {
+    if (!quiet) this.hitCd = 2.25
+    const shieldBefore = this.shield
+    if (this.shield > 0) {
+      this.shield -= dmg
+      if (this.shield < 0) {
+        this.hull += this.shield
+        this.shield = 0
+      }
+      if (!quiet) {
+        this.shieldFlash = 1
+        this.hurtV = Math.max(this.hurtV, shieldBefore > dmg ? 0.4 : 0.75)
+        this.audio.hit(true)
+      }
+    } else {
+      this.hull -= dmg
+      if (!quiet) {
+        this.hurtV = 1
+        this.audio.hit(false)
+      }
+    }
+    if (!quiet) this.trauma = Math.min(1, this.trauma + 0.42)
+    if (this.hull <= 0) {
+      this.hull = 0
+      this.lose('combat')
+    }
+  }
+
+  private hurtEnemy(e: Enemy, dmg: number) {
+    if (e.shield > 0) {
+      e.shield -= dmg
+      if (e.shield < 0) {
+        e.hull += e.shield
+        e.shield = 0
+      }
+    } else e.hull -= dmg
+    e.flashT = 0.16
+    e.bodyFlash()
+    this.floatDamage(e.pos, dmg)
+    this.hitMark = 0.18
+    this.trauma = Math.min(0.45, this.trauma + 0.1)
+    if (e.hull <= 0) {
+      e.alive = false
+      e.root.visible = false
+      this.spawnBoom(e.pos, 1.15, 0xff6644)
+      this.dropLoot(e.pos, e.small ? 12 : Math.round((14 + e.threat * 6) * (e.giant ? 2.5 : 1)), e.small ? 2 : e.giant ? 6 : 3)
+      this.kills++
+      this.addScore(45)
+      this.audio.boom()
+      this.trauma = Math.min(1, this.trauma + 0.18)
+      if (this.enemies.every((en) => !en.alive)) this.winCombat()
+    }
+  }
+
+  private updateBooms(dt: number) {
+    for (const b of this.booms) {
+      if (!b.alive) continue
+      b.age += dt
+      const pos = b.positions
+      const vel = b.vels
+      for (let i = 0; i < pos.length; i += 3) {
+        pos[i] += vel[i] * dt
+        pos[i + 1] += vel[i + 1] * dt
+        pos[i + 2] += vel[i + 2] * dt
+      }
+      b.points.geometry.attributes.position.needsUpdate = true
+      const k = 1 - b.age / b.life
+      b.mat.opacity = Math.max(0, k)
+      b.sprite.scale.setScalar(1.2 + b.age * 8)
+      b.spriteMat.opacity = Math.max(0, k * 0.8)
+      if (b.age >= b.life) {
+        b.alive = false
+        b.points.visible = false
+        b.sprite.visible = false
+      }
+    }
+  }
+
+  private updateCamera(dt: number) {
+    const flight = this.mode === 'map' || this.mode === 'combat' || this.mode === 'upgrade' || this.mode === 'pause'
+    if (this.mode === 'select' || !flight) return
+    const onFoot = this.layer === 'foot' && !(this.mode === 'combat' || (this.mode === 'pause' && this.pausedFrom === 'combat'))
+    if (onFoot && this.footPlanet) {
+      this.footCamera(dt)
+      return
+    }
+    const cockpit = this.camMode === 'cockpit' && this.mode !== 'upgrade'
+    shipForward(this.quat, vB)
+    shipUp(this.quat, vC)
+    const coarse = this.mobileCam || window.matchMedia('(pointer: coarse)').matches || window.innerWidth < 820
+    if (cockpit) {
+      vA.copy(this.pos).addScaledVector(vB, 0.22).addScaledVector(vC, 0.36)
+    } else {
+      const dist = clamp((coarse ? 14 : 9) + this.vel.length() * (coarse ? 0.045 : 0.03), coarse ? 14 : 9, coarse ? 26 : 16)
+      vA.copy(this.pos).addScaledVector(vB, -dist).addScaledVector(vC, dist * 0.18)
+    }
+    const k = this.snapCamera ? 1 : 1 - Math.exp(-(cockpit ? 14 : coarse ? 5.2 : 9) * dt)
+    this.camera.position.lerp(vA, k)
+    if (!cockpit) {
+      const dist = clamp((coarse ? 14 : 9) + this.vel.length() * (coarse ? 0.045 : 0.03), coarse ? 14 : 9, coarse ? 26 : 16)
+      vD.subVectors(this.camera.position, this.pos)
+      if (vD.dot(vB) > -dist * 0.25) {
+        this.camera.position.copy(this.pos).addScaledVector(vB, -dist).addScaledVector(vC, dist * 0.18)
+      } else if (vD.length() > dist * 1.12) {
+        this.camera.position.copy(this.pos).addScaledVector(vD.normalize(), dist * 1.12)
+      }
+      vE.copy(this.pos).addScaledVector(vB, coarse ? 0.25 : 0.55)
+      // Kamera "yukarı"yı geminin yukarısından alır; dik uçuşta dünya yukarısıyla ters dönmez.
+      if (this.snapCamera || this.camUp.dot(vC) < -0.2) this.camUp.copy(vC)
+      else this.camUp.lerp(vC, 1 - Math.exp(-5 * dt)).normalize()
+      this.camera.up.copy(this.camUp)
+      this.camera.lookAt(vE)
+    } else {
+      this.camera.quaternion.slerp(this.quat, k)
+    }
+    this.snapCamera = false
+    const targetFov = clamp(62 + this.vel.length() * 0.03 + (this.boosting ? 2 : 0) + this.trauma * 2, 62, 72)
+    this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.exp(-6 * dt))
+    this.camera.updateProjectionMatrix()
+    if (this.trauma > 0) {
+      this.trauma = Math.max(0, this.trauma - dt * 1.7)
+      const s = this.trauma * this.trauma
+      this.camera.position.x += (Math.random() - 0.5) * s * 0.18
+      this.camera.position.y += (Math.random() - 0.5) * s * 0.18
+      if (!cockpit) this.camera.lookAt(vE)
+    }
+  }
+
+  private updateLens() {
+    const u = this.lensPass.uniforms
+    const focus = this.lensFocus()
+    const show = focus && !(this.mode === 'intro' && this.introT < 17)
+    if (!show || !focus) {
+      u.uEnabled.value = 0
+      return
+    }
+    vA.copy(focus.pos).applyMatrix4(this.camera.matrixWorldInverse)
+    if (vA.z > -0.25) {
+      u.uEnabled.value = 0
+      return
+    }
+    vB.copy(focus.pos).project(this.camera)
+    u.uEnabled.value = 1
+    ;(u.uBhUv.value as Vector2).set(vB.x * 0.5 + 0.5, vB.y * 0.5 + 0.5)
+    u.uBhDepth.value = vB.z * 0.5 + 0.5
+    const dist = Math.max(this.camera.position.distanceTo(focus.pos), 0.5)
+    const half = Math.tan(MathUtils.degToRad(this.camera.fov) / 2)
+    const ndcR = Math.tan(Math.atan(focus.rs / dist)) / half
+    u.uBhRadius.value = ndcR * 0.5
+    u.uAspect.value = this.camera.aspect
+  }
+
+  private refreshHud() {
+    const r = this.pos.length()
+    this.domSet('clk-local', clock(this.properTime))
+    this.domSet('clk-out', clock(this.coordTime))
+    this.domSet('time-ratio', `${fmt2(this.tf)}×`)
+    this.domSet('world-mul', `dış dünya ×${fmt2(this.worldScale)}`)
+    must<HTMLElement>('ratio-fill').style.width = `${clamp(this.tf, 0, 1) * 100}%`
+    this.domSet('speed', fmt(this.vel.length()))
+    this.domSet('dist', fmt(r))
+    this.domSet('score', fmt(this.score))
+    this.domSet('best', fmt(this.best))
+    this.domSet('energy', fmt(this.energy))
+    this.domSet('hull-num', fmt(Math.max(0, this.hull)))
+    this.domSet('shield-num', fmt(Math.max(0, this.shield)))
+    this.domSet('vis-num', fmt(this.vis))
+    must<HTMLElement>('hull-fill').style.width = `${clamp(this.hull / this.hullMax, 0, 1) * 100}%`
+    must<HTMLElement>('shield-fill').style.width = `${clamp(this.shield / this.shieldMax, 0, 1) * 100}%`
+    must<HTMLElement>('vis-fill').style.width = `${clamp(this.vis, 0, 100)}%`
+    this.dom.vis.classList.toggle('warm', this.vis >= 36 && this.vis < 80)
+    this.dom.vis.classList.toggle('hot', this.vis >= 80)
+    must<HTMLDivElement>('badge-easy').classList.toggle('hidden', !this.save.settings.easy)
+    must<HTMLDivElement>('badge-stable').classList.toggle('hidden', this.stabilizeT <= 0)
+    this.hurtV = Math.max(0, this.hurtV - 0.016)
+    this.dom.hurt.style.opacity = String(this.hurtV)
+    this.dom.grav.style.opacity = this.mode === 'map' ? String(clamp((78 - r) / 58, 0, 1) * 0.9) : '0'
+    shipForward(this.quat, vA)
+    shipUp(this.quat, vB)
+    shipRight(this.quat, vC)
+    const pitch = Math.asin(clamp(vA.y, -1, 1))
+    const roll = Math.atan2(vC.y, vB.y)
+    const pitchPx = clamp(-pitch, -0.7, 0.7) * 120
+    this.dom.horizon.style.transform = `translateY(${pitchPx}px) rotate(${roll}rad)`
+    let hot = false
+    if (this.fighting()) {
+      for (const e of this.enemies) {
+        if (!e.alive) continue
+        vD.subVectors(e.pos, this.pos)
+        const d = vD.length()
+        if (d < 170 && vA.dot(vD.multiplyScalar(1 / d)) > 0.985) hot = true
+      }
+    }
+    this.dom.cross.classList.toggle('hot', hot)
+    this.dom.lock.classList.toggle('hidden', this.holdPose || this.input.locked || (this.mode !== 'map' && this.mode !== 'combat'))
+    let prompt = ''
+    const gate = this.enemyGates.find((item) => item.alive && this.pos.distanceTo(item.pos) < 18)
+    if (this.mode === 'combat') {
+      const alive = this.enemies.filter((e) => e.alive).length
+      if (gate) prompt = `Eşik → ${UNIVERSES[gate.to].name}`
+      else prompt = this.canFlee() ? 'F — kaç' : `Düşman ${alive}`
+    } else if (this.mode === 'map') {
+      const near = this.nearestFleet(150)
+      const lethal = this.holes.find((h) => h.kind === 'hole' && this.pos.distanceTo(h.pos) < h.rs * 2.1)
+      const throat = this.holes.find((h) => h.kind === 'worm' && this.pos.distanceTo(h.pos) < 46)
+      const land = this.layer === 'ship' ? this.nearestLandable() : null
+      if (this.layer === 'foot' && this.footPlanet) {
+        prompt = this.footPrompt()
+      } else if (lethal) prompt = 'Olay ufkuna çok yakınsın'
+      else if (throat?.to) prompt = `Eşik → ${UNIVERSES[throat.to].name}`
+      else if (land) prompt = `L — in · ${land.def.name}`
+      else if (near && near.fleet.state !== 'leave') prompt = near.dist < 48 ? 'F — kapış · çok yakın' : 'F — kapış'
+    }
+    const names = this.holes.filter((h) => h.kind === 'worm' && h.to).map((h) => UNIVERSES[h.to as UniId].name)
+    const home = UNIVERSES[homeSystem(this.originId)]
+    this.domSet('worm-net', names.length ? `Ağ → ${names.join(' · ')}` : '')
+    this.domSet('netmap', `Ev: ${home.name}${this.isHome() ? ' · buradasın' : ''}${names.length ? ` · kapı: ${names.join(', ')}` : ''}`)
+    must<HTMLElement>('home-flag').classList.toggle('hidden', !this.isHome())
+    // Telefonda saatler yalnız zaman bükülürken görünür; yeteneği olmayan ırkta G/H düğmesi gizlenir.
+    document.body.classList.toggle('rel', this.tf < 0.97 || this.worldScale > 1.03)
+    const affordable = this.mode === 'map' && this.canUpgrade()
+    must<HTMLElement>('upgrade-hint').classList.toggle('hidden', !(affordable && this.layer === 'ship' && !this.fighting()))
+    document.body.classList.toggle('upgrade-ready', affordable && this.nearParkedShip())
+    const origin = this.origin()
+    document.body.classList.toggle('no-ab1', !origin.ability)
+    document.body.classList.toggle('no-ab2', !origin.ability2)
+    const heatEl = must<HTMLElement>('heat')
+    heatEl.classList.toggle('hidden', this.heat < 0.04)
+    must<HTMLElement>('heat-fill').style.width = `${clamp(this.heat, 0, 1) * 100}%`
+    must<HTMLElement>('hitmark').classList.toggle('on', this.hitMark > 0)
+    this.hitMark = Math.max(0, this.hitMark - 0.016)
+    this.paintLock()
+    this.paintFloats()
+    this.paintBase()
+    const weapon = WEAPONS.find((item) => item.id === this.weapon)
+    this.domSet('weapon-name', weapon?.name ?? 'Lazer')
+    const landBtn = document.querySelector<HTMLButtonElement>('#touch-buttons button[data-act="land"]')
+    if (landBtn) landBtn.textContent = this.layer === 'foot' ? 'Bin' : 'İn'
+    this.domSet('uni-name', UNIVERSES[this.universeId].name)
+    this.paintAbilities()
+    this.updateLod()
+    this.paintBeacons()
+    this.paintRoute()
+    this.paintAttitude()
+    if (this.dom.prompt.textContent !== prompt) this.dom.prompt.textContent = prompt
+    if (this.toastT > 0) {
+      this.toastT -= 0.016
+      if (this.toastT <= 0) this.dom.toast.textContent = ''
+    }
+    this.drawRadar()
+  }
+
+  private toggleRadar() {
+    this.radarMode = this.radarMode === 'radar' ? 'system' : 'radar'
+    this.audio.ui()
+  }
+
+  /** Tek bakışta sistem: yörüngeler, gezegenler, karakollar, kapılar (nereye gittikleriyle), sen ve rotan. Kuzey yukarıda. */
+  private drawSystemMap() {
+    const ctx = this.radar
+    const w = 180
+    ctx.clearRect(0, 0, w, w)
+    ctx.save()
+    ctx.beginPath()
+    ctx.arc(90, 90, 86, 0, Math.PI * 2)
+    ctx.clip()
+    ctx.fillStyle = 'rgba(7,9,13,0.55)'
+    ctx.fillRect(0, 0, w, w)
+    const extent = Math.max(400, this.mapLimit - 900)
+    const scale = 80 / extent
+    const X = (p: Vector3) => 90 + p.x * scale
+    const Y = (p: Vector3) => 90 + p.z * scale
+    ctx.lineWidth = 1
+    for (const planet of this.planets) {
+      const flat = Math.hypot(planet.pos.x, planet.pos.z)
+      if (flat < 1) continue
+      ctx.strokeStyle = 'rgba(231,227,218,0.09)'
+      ctx.beginPath()
+      ctx.arc(90, 90, flat * scale, 0, Math.PI * 2)
+      ctx.stroke()
+    }
+    for (const h of this.holes) {
+      if (h.kind !== 'hole') continue
+      ctx.strokeStyle = 'rgba(228,161,92,0.9)'
+      ctx.beginPath()
+      ctx.arc(X(h.pos), Y(h.pos), 3, 0, Math.PI * 2)
+      ctx.stroke()
+    }
+    const target = this.waypoint()
+    for (const planet of this.planets) {
+      const r = Math.max(planet.def.heat ? 4 : 1.8, Math.min(6, planet.def.radius * scale * 1.6))
+      ctx.fillStyle = `#${planet.def.color.toString(16).padStart(6, '0')}`
+      ctx.beginPath()
+      ctx.arc(X(planet.pos), Y(planet.pos), r, 0, Math.PI * 2)
+      ctx.fill()
+      const c = this.colonies[planet.def.id]
+      if (c) {
+        ctx.strokeStyle = this.mine(c) ? '#7dff8a' : '#ff5a4a'
+        ctx.lineWidth = 1.6
+        ctx.beginPath()
+        ctx.arc(X(planet.pos), Y(planet.pos), r + 2.4, 0, Math.PI * 2)
+        ctx.stroke()
+        ctx.lineWidth = 1
+      }
+    }
+    ctx.font = 'bold 9px sans-serif'
+    ctx.textAlign = 'center'
+    for (const h of this.holes) {
+      if (h.kind !== 'worm' || !h.to) continue
+      const hot = target === h.pos
+      ctx.strokeStyle = hot ? '#ffe27a' : '#7ad7ff'
+      ctx.lineWidth = hot ? 2.2 : 1.4
+      ctx.beginPath()
+      ctx.arc(X(h.pos), Y(h.pos), 4, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.fillStyle = hot ? '#ffe27a' : '#bfeaff'
+      const label = UNIVERSES[h.to].name.split(' ')[0].slice(0, 7)
+      ctx.fillText(h.to === homeSystem(this.originId) ? `⌂${label}` : label, X(h.pos), Y(h.pos) - 7)
+    }
+    for (const fl of this.fleets) {
+      ctx.fillStyle = '#e15b4c'
+      ctx.fillRect(X(fl.pos) - 1.5, Y(fl.pos) - 1.5, 3, 3)
+    }
+    if (target) {
+      ctx.strokeStyle = 'rgba(255,226,122,0.7)'
+      ctx.setLineDash([3, 3])
+      ctx.beginPath()
+      ctx.moveTo(X(this.pos), Y(this.pos))
+      ctx.lineTo(X(target), Y(target))
+      ctx.stroke()
+      ctx.setLineDash([])
+    }
+    ctx.restore()
+    shipForward(this.quat, vA)
+    const ang = Math.atan2(vA.x, -vA.z)
+    const px = clamp(X(this.pos), 8, 172)
+    const py = clamp(Y(this.pos), 8, 172)
+    ctx.save()
+    ctx.translate(px, py)
+    ctx.rotate(ang)
+    ctx.fillStyle = '#ffffff'
+    ctx.beginPath()
+    ctx.moveTo(0, -7)
+    ctx.lineTo(-4.5, 5)
+    ctx.lineTo(4.5, 5)
+    ctx.closePath()
+    ctx.fill()
+    ctx.restore()
+  }
+
+  private drawRadar() {
+    const label = this.radarMode === 'system' && !this.fighting() ? `Sistem · N` : 'Radar · N'
+    this.domSet('radar-label', label)
+    if (this.radarMode === 'system' && !this.fighting()) {
+      this.drawSystemMap()
+      return
+    }
+    const ctx = this.radar
+    const w = 180
+    ctx.clearRect(0, 0, w, w)
+    ctx.save()
+    ctx.beginPath()
+    ctx.arc(90, 90, 84, 0, Math.PI * 2)
+    ctx.clip()
+    ctx.fillStyle = 'rgba(7,9,13,0.2)'
+    ctx.fillRect(0, 0, w, w)
+    ctx.strokeStyle = 'rgba(231,227,218,0.16)'
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.arc(90, 90, 36, 0, Math.PI * 2)
+    ctx.stroke()
+    ctx.beginPath()
+    ctx.arc(90, 90, 64, 0, Math.PI * 2)
+    ctx.stroke()
+    const combat = this.fighting()
+    const range = combat ? 170 : RADAR_RANGE
+    const scale = 76 / range
+    shipForward(this.quat, vA)
+    const yaw = Math.atan2(vA.x, -vA.z)
+    const c = Math.cos(-yaw)
+    const s = Math.sin(-yaw)
+    const blip = (p: Vector3, color: string, rad: number) => {
+      const dx = p.x - this.pos.x
+      const dz = p.z - this.pos.z
+      const rx = dx * c - dz * s
+      const rz = dx * s + dz * c
+      const x = 90 + rx * scale
+      const y = 90 + rz * scale
+      if ((x - 90) ** 2 + (y - 90) ** 2 > 80 ** 2) return
+      ctx.fillStyle = color
+      ctx.beginPath()
+      ctx.arc(x, y, rad, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    if (!combat) {
+      for (const h of this.holes) {
+        if (h.kind === 'worm') blip(h.pos, '#7ad7ff', 3.5)
+        else {
+          blip(h.pos, '#07080c', 5)
+          const dx = h.pos.x - this.pos.x
+          const dz = h.pos.z - this.pos.z
+          const x = 90 + (dx * c - dz * s) * scale
+          const y = 90 + (dx * s + dz * c) * scale
+          ctx.strokeStyle = 'rgba(228,161,92,0.8)'
+          ctx.beginPath()
+          ctx.arc(x, y, Math.max(3, h.rs * scale), 0, Math.PI * 2)
+          ctx.stroke()
+        }
+      }
+      ctx.font = '10px sans-serif'
+      for (const planet of this.planets) {
+        blip(planet.pos, planet.def.kind === 'small' ? '#8fd0c6' : '#e4a15c', planet.def.kind === 'small' ? 2.4 : 4)
+        const dy = planet.pos.y - this.pos.y
+        if (Math.abs(dy) < 28) continue
+        const dx = planet.pos.x - this.pos.x
+        const dz = planet.pos.z - this.pos.z
+        const x = 90 + (dx * c - dz * s) * scale
+        const y = 90 + (dx * s + dz * c) * scale
+        if ((x - 90) ** 2 + (y - 90) ** 2 > 70 ** 2) continue
+        ctx.fillStyle = dy > 0 ? '#f3d7b0' : '#8fd0c8'
+        ctx.fillText(dy > 0 ? '▲' : '▼', x - 3, y - 6)
+      }
+      for (const f of this.frags) if (f.alive) blip(f.mesh.position, '#e4a15c', 2)
+      for (const fl of this.fleets) blip(fl.pos, '#e15b4c', 3.5)
+    } else {
+      for (const e of this.enemies) if (e.alive) blip(e.pos, e.stun > 0 ? '#9ae7ff' : e.giant ? '#ffd27a' : e.human ? '#d5dbe6' : '#e15b4c', e.giant ? 6 : 3.2)
+      for (const g of this.enemyGates) if (g.alive) blip(g.pos, '#7ad7ff', 4)
+      if (this.wellLife > 0) blip(this.wellPos, '#ffe2b0', 4)
+    }
+    ctx.restore()
+    ctx.fillStyle = '#e7e3da'
+    ctx.beginPath()
+    ctx.moveTo(90, 80)
+    ctx.lineTo(85, 98)
+    ctx.lineTo(95, 98)
+    ctx.closePath()
+    ctx.fill()
+  }
+
+  private applyPresentation() {
+    const flight = this.mode === 'map' || this.mode === 'combat' || this.mode === 'pause' || this.mode === 'upgrade'
+    const combatView = this.mode === 'combat' || (this.mode === 'pause' && this.pausedFrom === 'combat')
+    this.mapRoot.visible = !combatView && this.mode !== 'intro'
+    if (this.mode === 'intro') this.mapRoot.visible = this.introT > 16
+    this.combatRoot.visible = combatView || flight
+    const showShip = flight || this.mode === 'select'
+    this.visual.root.visible = showShip
+    const onFoot = this.layer === 'foot' && !combatView
+    const cockpit = this.camMode === 'cockpit' && flight && this.mode !== 'upgrade' && !onFoot
+    this.visual.body.visible = !cockpit
+    this.visual.cockpit.visible = cockpit
+    this.visual.shield.visible = !cockpit && this.shield > 0 && !onFoot
+    const beacon = this.visual.root.getObjectByName('beacon')
+    if (beacon) beacon.visible = !cockpit
+    if (this.walker) this.walker.visible = onFoot && this.mapRoot.visible
+    document.body.classList.toggle('on-foot', onFoot)
+    document.body.classList.toggle('cockpit', cockpit && (this.mode === 'map' || this.mode === 'combat' || this.mode === 'pause'))
+    document.body.classList.toggle('paused', this.mode === 'pause')
+    this.dom.hud.classList.toggle('hidden', !flight)
+    this.dom.intro.classList.toggle('hidden', this.mode !== 'intro')
+    this.dom.title.classList.toggle('hidden', this.mode !== 'title')
+    must<HTMLDivElement>('select').classList.toggle('hidden', this.mode !== 'select')
+    const pilot = this.pilots[this.originId]
+    if (pilot) pilot.visible = this.mode === 'select'
+    this.dom.pause.classList.toggle('hidden', this.mode !== 'pause')
+    this.dom.upgrade.classList.toggle('hidden', this.mode !== 'upgrade')
+    this.dom.gameover.classList.toggle('hidden', this.mode !== 'gameover')
+    this.dom.cross.classList.toggle('hidden', !flight || (this.layer === 'foot' && !combatView))
+    this.introPoints.visible = this.mode === 'intro' && this.introT > 4.6 && this.introT < 33
+  }
+
+  private toggleCam() {
+    this.camMode = this.camMode === 'chase' ? 'cockpit' : 'chase'
+    this.snapCamera = true
+    this.audio.ui()
+  }
+
+  private canFlee() {
+    if (this.combatTime < 3) return false
+    let min = Infinity
+    for (const e of this.enemies) if (e.alive) min = Math.min(min, e.pos.distanceTo(this.pos))
+    return this.pos.length() > 175 && min > 105
+  }
+
+  /** Filo yakalayınca savaş olduğun yerde başlar: sahne, kamera ve mod değişmez. */
+  private beginCombat(fleet: Fleet) {
+    if (this.fading || this.mode !== 'map' || this.layer !== 'ship') return
+    const fresh = !this.enemies.some((e) => e.alive)
+    if (fresh) {
+      this.clearCombat()
+      this.combatTime = 0
+      this.combatCount = 0
+      this.combatThreat = 0
+    }
+    this.combatCount += fleet.count
+    this.combatThreat = Math.max(this.combatThreat, fleet.threat)
+    const at = fleet.pos.clone()
+    const small = Boolean(fleet.small)
+    if (small) this.homePatrols = Math.max(0, this.homePatrols - 1)
+    this.removeFleet(fleet)
+    this.tipsOn = false
+    this.skirmish = true
+    this.ending = false
+    this.spawnEnemies(fleet.count, fleet.threat, at, small)
+    this.audio.warning()
+    this.toast(
+      small
+        ? 'Küçük bir uzaylı gemisi saldırıyor. Vur, düşen ganimeti topla.'
+        : this.enemies.some((e) => e.alive && e.giant)
+          ? 'Temas. İçlerinde dev bir avcı var.'
+          : 'Temas. Filo üstüne geldi — burada savaş.',
+    )
+  }
+
+  /** Yerinde savaşın güncellemesi (harita modunda çalışır). */
+  private updateSkirmish(dt: number) {
+    if (!this.enemies.length) return
+    this.combatTime += dt
+    let alive = 0
+    let near = Infinity
+    vA.set(0, 0, 0)
+    for (const e of this.enemies) {
+      this.updateEnemy(e, dt)
+      if (!e.alive) continue
+      alive++
+      vA.add(e.pos)
+      near = Math.min(near, e.pos.distanceTo(this.pos))
+    }
+    this.updateGates(dt)
+    if (!alive) {
+      if (this.skirmish) this.winCombat()
+      return
+    }
+    // Çok uzaklaşırsan savaş biter; kalanlar yeniden filo olur ve iz sürer.
+    if (near > 260) {
+      vA.multiplyScalar(1 / alive)
+      const left = this.enemies.filter((e) => e.alive)
+      const small = left.every((e) => e.small)
+      const threat = Math.max(0, ...left.map((e) => e.threat))
+      this.clearCombat()
+      this.skirmish = false
+      const fleet = this.spawnFleet(Math.max(1, left.length - (small ? 0 : 2)), threat, vA.clone(), small ? 'patrol' : 'search')
+      fleet.small = small
+      if (small) this.homePatrols++
+      this.toast('Uzaklaştın. Savaş bitti, iz sürüyorlar.')
+    }
+  }
+
+  private dropLoot(at: Vector3, value: number, pieces: number) {
+    const per = Math.max(1, Math.round(value / pieces))
+    for (let i = 0; i < pieces; i++) {
+      let item = this.loot.find((l) => !l.alive)
+      if (!item) {
+        const mesh = new Group()
+        const coreMat = new MeshBasicMaterial({ color: 0xffc46a })
+        coreMat.toneMapped = false
+        const gem = new Mesh(new OctahedronGeometry(0.75), coreMat)
+        const haloMat = new MeshBasicMaterial({ color: 0xffd79a, transparent: true, opacity: 0.35, blending: AdditiveBlending, depthWrite: false })
+        haloMat.toneMapped = false
+        const halo = new Mesh(new SphereGeometry(1.5, 10, 8), haloMat)
+        mesh.add(gem, halo)
+        mesh.name = 'loot'
+        this.mapRoot.add(mesh)
+        item = { alive: false, pos: new Vector3(), vel: new Vector3(), value: 0, age: 0, mesh }
+        this.loot.push(item)
+      }
+      item.alive = true
+      item.age = 0
+      item.value = per
+      item.pos.copy(at)
+      item.vel.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize().multiplyScalar(6 + Math.random() * 6)
+      item.mesh.visible = true
+      item.mesh.position.copy(item.pos)
+    }
+  }
+
+  private updateLoot(dt: number) {
+    for (const l of this.loot) {
+      if (!l.alive) continue
+      l.age += dt
+      const d = l.pos.distanceTo(this.pos)
+      if (this.layer === 'ship' && d < 48) {
+        vA.subVectors(this.pos, l.pos).normalize()
+        l.vel.lerp(vA.multiplyScalar(Math.max(40, this.vel.length() + 20)), 1 - Math.exp(-4 * dt))
+      } else l.vel.multiplyScalar(Math.max(0, 1 - dt * 1.5))
+      l.pos.addScaledVector(l.vel, dt)
+      l.mesh.position.copy(l.pos)
+      l.mesh.rotation.y += dt * 2.4
+      l.mesh.scale.setScalar(1 + Math.sin(l.age * 6) * 0.12)
+      if (this.layer === 'ship' && d < 6.5) {
+        l.alive = false
+        l.mesh.visible = false
+        this.collectLoot(l.value)
+      } else if (l.age > 45) {
+        l.alive = false
+        l.mesh.visible = false
+      }
+    }
+    if (this.lootSum > 0) {
+      this.lootToastT -= dt
+      if (this.lootToastT <= 0) {
+        const c = this.homeColony()
+        const tail = c
+          ? c.level >= MAX_LEVEL
+            ? ` · karakol sv ${c.level} (azami)`
+            : ` · karakol deposu ${Math.floor(c.store ?? 0)}/${UPGRADE_COST[c.level + 1]}`
+          : ''
+        this.toast(`Ganimet +${this.lootSum} enerji${tail}`)
+        this.lootSum = 0
+      }
+    }
+  }
+
+  private clearLoot() {
+    for (const l of this.loot) {
+      l.alive = false
+      l.mesh.visible = false
+    }
+    this.lootSum = 0
+  }
+
+  /** Ganimet enerji verir; bir payı da ana karakolun deposuna gider ve depo dolunca karakol seviye atlar. */
+  private collectLoot(value: number) {
+    this.energy += value
+    this.lastLoot = value
+    this.addScore(4)
+    this.audio.collect()
+    this.lootSum += value
+    this.lootToastT = 0.35
+    this.feedOutpost(value)
+  }
+
+  private feedOutpost(value: number) {
+    const c = this.homeColony()
+    if (!c || c.level >= MAX_LEVEL) return
+    c.store = (c.store ?? 0) + value * LOOT_TO_OUTPOST
+    while (c.level < MAX_LEVEL && (c.store ?? 0) >= UPGRADE_COST[c.level + 1]) {
+      c.store = (c.store ?? 0) - UPGRADE_COST[c.level + 1]
+      c.level++
+      c.hullMax = coreHullMax(c.level)
+      c.hull = c.hullMax
+      const planet = this.planetOf(c)
+      if (planet) this.attachColony(c, planet)
+      this.toast(`Ganimetle karakol büyüdü: seviye ${c.level}. ${c.planetName} nüfus tavanı ${settlerCap(c.level, c.turrets.length)}.`)
+      this.audio.collect()
+    }
+  }
+
+  /** Filonun tamamı düştü: ekran değişmez, ganimet parçaları ortada kalır. */
+  private winCombat() {
+    if (!this.skirmish) return
+    this.skirmish = false
+    this.fights++
+    this.wins += 1
+    this.save.wins = this.wins
+    writeSave(this.save)
+    this.addScore(40 + this.combatCount * 20)
+    this.vis = Math.min(this.vis, 34)
+    this.grace = 3
+    this.clearCombat()
+    this.toast('Filo düştü. Parlayan ganimeti topla — Esc menüsünden gemiyi geliştirebilirsin.')
+  }
+
+  private flee() {
+    if (this.ending) return
+    this.ending = true
+    this.fadeTo(() => {
+      const count = this.combatCount
+      const threat = this.combatThreat
+      this.restoreMap()
+      this.clearCombat()
+      this.clearShots()
+      shipForward(this.quat, vA)
+      vB.copy(this.pos).addScaledVector(vA, -190)
+      this.spawnFleet(count, threat, vB, 'search')
+      this.vis = Math.min(100, Math.max(this.vis, 60))
+      this.mode = 'map'
+      this.ending = false
+      this.toast('Kaçtın. Hâlâ iz sürüyorlar.')
+      this.input.requestLock()
+    })
+  }
+
+  private lose(reason: 'ufuk' | 'combat') {
+    if (this.ending || this.mode === 'gameover') return
+    this.ending = true
+    this.spawnBoom(this.pos, 1.7, 0xffd0b0)
+    this.audio.boom()
+    this.fadeTo(() => {
+      this.mode = 'gameover'
+      this.ending = false
+      this.clearCombat()
+      this.clearShots()
+      this.visual.root.visible = false
+      this.input.exitLock()
+      this.dom.goTitle.textContent = reason === 'ufuk' ? 'Ufuk' : 'Avlandın'
+      this.dom.goReason.textContent =
+        reason === 'ufuk' ? 'Olay ufku seni yuttu. Dışarıda zaman akıp gitti.' : 'Sessizliği bozdun. Orman cevap verdi.'
+      this.dom.goScore.textContent = fmt(this.score)
+      this.dom.goKills.textContent = fmt(this.kills)
+      this.dom.goBest.textContent = fmt(this.best)
+    })
+  }
+
+  private restoreMap() {
+    this.pos.copy(this.saved.pos)
+    this.vel.copy(this.saved.vel)
+    this.quat.copy(this.saved.quat)
+    this.visual.root.position.copy(this.pos)
+    this.visual.root.quaternion.copy(this.quat)
+    this.snapCamera = true
+  }
+
+  private startRun() {
+    this.fadeTo(() => {
+      this.resetRun()
+      this.mode = 'map'
+      this.snapCamera = true
+      this.input.requestLock()
+    })
+  }
+
+  private resetRun() {
+    this.clearCombat()
+    this.clearGround()
+    this.clearColonies()
+    this.botSeeded.clear()
+    this.cleared.clear()
+    this.botT = 40
+    this.clearFleets()
+    this.clearShots()
+    this.squad = []
+    this.clearEscorts()
+    this.score = 0
+    this.energy = 0
+    this.kills = 0
+    this.fights = 0
+    this.vis = 0
+    this.grace = 2.4
+    this.properTime = 0
+    this.coordTime = 0
+    this.tf = 1
+    this.scoreTick = 0
+    this.fragTimer = 0
+    this.hitCd = 0
+    this.fireCd = 0
+    this.stabilizeT = 0
+    this.trauma = 0
+    this.hurtV = 0
+    this.ending = false
+    this.tipsOn = true
+    this.tipI = 0
+    this.tipT = 1.6
+    this.hullWarned = false
+    this.bandFired = [false, false, false]
+    this.lastLoot = 0
+    this.camMode = 'chase'
+    this.cd1 = 0
+    this.cd2 = 0
+    this.cloakT = 0
+    this.wellLife = 0
+    if (this.wellMesh) this.wellMesh.visible = false
+    this.layer = 'ship'
+    this.footPlanet = null
+    this.returns = {}
+    clearRun()
+    this.clearLocals()
+    this.owned = starterWeapons(this.originId)
+    this.weapon = signatureWeapon(this.originId)
+    this.powerT = 0
+    this.razed.clear()
+    this.clearLoot()
+    this.skirmish = false
+    this.homePatrols = 0
+    this.homePatrolT = 0
+    // Bütün türler baştan dünyada: her biri kendi ev sisteminde karakolla başlar.
+    this.seedWorld()
+    this.layoutUniverse(homeSystem(this.originId))
+    this.up = { hull: 1, shield: 1, weapon: 1, engine: 1, stealth: 1 }
+    this.applyUpgradeStats()
+    this.hull = this.hullMax
+    this.shield = this.shieldMax
+    const homePlanet = this.planets.find((p) => p.def.home) ?? null
+    if (homePlanet) {
+      vA.set(-homePlanet.pos.x, 0, -homePlanet.pos.z)
+      if (vA.lengthSq() < 1) vA.set(0, 0, 1)
+      vA.normalize().applyAxisAngle(AXIS_Y, 0.35)
+      vA.y = 0.18
+      vA.normalize()
+      this.pos.copy(homePlanet.pos).addScaledVector(vA, homePlanet.def.radius + 34)
+      this.vel.set(0, 0, 0)
+      vB.copy(homePlanet.pos).sub(this.pos).normalize()
+      vC.crossVectors(vB, WORLD_UP).normalize()
+      vB.addScaledVector(vC, 0.9).normalize()
+      quatFromForward(this.quat, vB)
+      this.foundStartOutpost(homePlanet, vA)
+    } else {
+      this.pos.set(0, 48, 220)
+      this.vel.set(0, 0, 0)
+      quatFromForward(this.quat, vB.set(1, 0, 0))
+    }
+    this.visual.root.position.copy(this.pos)
+    this.visual.root.quaternion.copy(this.quat)
+    for (const f of this.frags) {
+      f.alive = false
+      f.mesh.visible = false
+    }
+    for (let i = 0; i < 4; i++) this.spawnFragment(Math.PI / 2 - 0.4 - i * 0.32, this.fragInner + 85 + i * 12, 18 + i * 6)
+    for (let i = 0; i < 7; i++) this.spawnFragment()
+    this.homePatrols = 4
+    this.spawnHomePatrols(this.homePatrols)
+    this.tipT = 7
+    if (homePlanet) this.toast(`${homePlanet.def.name}: ev gezegenin. Karakolun kuruldu (sv 1). Etraftaki küçük gemileri avla, ganimetle karakolu büyüt.`)
+    this.diskMat.uniforms.uAlpha.value = 1
+    this.hideControls()
+  }
+
+  private continueRun() {
+    this.mode = 'map'
+    this.grace = Math.max(this.grace, 2)
+    this.input.requestLock()
+  }
+
+  private pause() {
+    if (this.mode !== 'map' && this.mode !== 'combat') return
+    this.suppressPause = true
+    this.pausedFrom = this.mode
+    this.mode = 'pause'
+    this.input.exitLock()
+    this.dom.levels.textContent = `Gövde ${this.up.hull} · Kalkan ${this.up.shield} · Silah ${this.up.weapon} · Motor ${this.up.engine} · Gizlilik ${this.up.stealth}`
+    window.setTimeout(() => {
+      this.suppressPause = false
+    }, 0)
+  }
+
+  private resume() {
+    this.mode = this.pausedFrom === 'combat' ? 'combat' : 'map'
+    this.input.requestLock()
+  }
+
+  private goTitle() {
+    this.fadeToken++
+    this.fading = false
+    this.dom.fade.classList.remove('on')
+    this.clearCombat()
+    this.clearFleets()
+    this.clearShots()
+    this.mode = 'title'
+    this.visual.root.visible = false
+    this.mapRoot.visible = true
+    this.diskMat.uniforms.uAlpha.value = 1
+    this.input.exitLock()
+    this.hideControls()
+    this.applyPresentation()
+  }
+
+  private skipIntro() {
+    if (this.mode !== 'intro') return
+    this.finishIntro()
+    this.skipLock = 0.45
+    this.dom.title.style.pointerEvents = 'none'
+    const block = this.dom.title.querySelector('.title-block')
+    if (block instanceof HTMLElement) block.style.pointerEvents = 'none'
+    window.setTimeout(() => {
+      this.dom.title.style.pointerEvents = ''
+      if (block instanceof HTMLElement) block.style.pointerEvents = ''
+    }, 380)
+  }
+
+  private finishIntro() {
+    this.mode = 'title'
+    this.introPoints.visible = false
+    this.dom.flash.style.opacity = '0'
+    this.diskMat.uniforms.uAlpha.value = 1
+    this.bangPlayed = true
+    this.applyPresentation()
+  }
+
+  private syncLine() {
+    let idx = 0
+    for (let i = 0; i < LINES.length; i++) if (this.introT >= LINES[i][0]) idx = i
+    if (idx !== this.lineShown) {
+      this.lineShown = idx
+      this.dom.introText.textContent = LINES[idx][1]
+    }
+  }
+
+  private buy(id: UpId) {
+    const level = this.up[id]
+    if (level >= 5) return
+    const price = costOf(level)
+    if (this.energy < price) return
+    this.energy -= price
+    this.up[id] = level + 1
+    this.applyUpgradeStats()
+    if (id === 'hull') this.hull = Math.min(this.hullMax, this.hull + 30)
+    if (id === 'shield') this.shield = this.shieldMax
+    this.audio.ui()
+    this.renderUpgrades()
+  }
+
+  private applyUpgradeStats() {
+    const o = originById(this.originId)
+    this.hullMax = o.hull + (this.up.hull - 1) * 28
+    this.shieldMax = o.shield + (this.up.shield - 1) * 18
+    this.regen = (o.regen + (this.up.shield - 1) * 1.6) * 1.32
+    this.weaponMul = o.weapon * (1 + (this.up.weapon - 1) * 0.22)
+    this.engineMul = o.engine * (1 + (this.up.engine - 1) * 0.16)
+    this.stealthMul = o.stealth / (1 + (this.up.stealth - 1) * 0.28)
+    this.hull = Math.min(this.hull, this.hullMax)
+    this.shield = Math.min(this.shield, this.shieldMax)
+  }
+
+  private renderUpgrades() {
+    this.dom.upLoot.textContent = this.lastLoot > 0 ? `Ganimet +${fmt(this.lastLoot)} enerji` : ''
+    this.dom.upEnergy.textContent = `Enerji ${fmt(this.energy)}`
+    this.dom.upList.innerHTML = ''
+    for (const up of UPS) {
+      const level = this.up[up.id]
+      const maxed = level >= 5
+      const price = costOf(level)
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'up-row'
+      btn.disabled = maxed || this.energy < price
+      const pips = Array.from({ length: 5 }, (_, i) => `<i class="${i < level ? 'on' : ''}"></i>`).join('')
+      btn.innerHTML = `<span><strong>${up.name} <span class="pips">${pips}</span></strong><small>${up.blurb}</small></span><em>${maxed ? 'Azami' : `${fmt(price)} enerji`}</em>`
+      btn.addEventListener('click', () => this.buy(up.id))
+      this.dom.upList.append(btn)
+    }
+  }
+
+  private addScore(n: number) {
+    this.score += n
+    this.checkUnlocks()
+    if (this.score > this.best) {
+      this.best = this.score
+      this.save.best = this.best
+      writeSave(this.save)
+    }
+  }
+
+  private toast(msg: string) {
+    this.dom.toast.textContent = msg
+    this.toastT = 3.6
+  }
+
+  private checkUnlocks() {
+    const order = WEAPONS.map((item) => item.id)
+    const bonus = this.score >= 500 ? 4 : this.score >= 320 ? 3 : this.score >= 180 ? 2 : this.score >= 80 ? 1 : 0
+    const want = Math.min(order.length, starterWeapons(this.originId).length + bonus)
+    while (this.owned.length < want) {
+      const next = order.find((id) => !this.owned.includes(id))
+      if (!next) break
+      this.owned.push(next)
+      const info = WEAPONS.find((item) => item.id === next)
+      const text = `Yeni silah: ${info?.name ?? next}`
+      this.toast(text)
+      const banner = document.getElementById('unlock')
+      if (banner) {
+        banner.textContent = text
+        banner.classList.add('on')
+        window.setTimeout(() => banner.classList.remove('on'), 2600)
+      }
+    }
+  }
+
+  private floatDamage(at: Vector3, amount: number, cls = '', up?: Vector3) {
+    const host = document.getElementById('floats')
+    if (!host) return
+    const el = document.createElement('span')
+    el.textContent = String(Math.max(1, Math.round(amount)))
+    if (cls) el.className = cls
+    host.append(el)
+    this.floats.push({ el, life: cls ? 1 : 0.8, pos: at.clone(), up: up?.clone() })
+  }
+
+  private paintFloats() {
+    for (let i = this.floats.length - 1; i >= 0; i--) {
+      const item = this.floats[i]
+      item.life -= 0.016
+      if (item.up) item.pos.addScaledVector(item.up, 0.12)
+      else item.pos.y += 0.12
+      const p = item.pos.clone().project(this.camera)
+      if (item.life <= 0 || p.z > 1) {
+        item.el.remove()
+        this.floats.splice(i, 1)
+        continue
+      }
+      item.el.style.left = `${(p.x * 0.5 + 0.5) * 100}%`
+      item.el.style.top = `${(-p.y * 0.5 + 0.5) * 100}%`
+      item.el.style.opacity = String(clamp(item.life * 1.4, 0, 1))
+    }
+  }
+
+  private paintLock() {
+    const el = document.getElementById('lock-on')
+    if (!el) return
+    const target = this.fighting() ? this.lockTarget : null
+    if (!target?.alive) {
+      el.classList.add('hidden')
+      return
+    }
+    const p = target.pos.clone().project(this.camera)
+    if (p.z > 1) {
+      el.classList.add('hidden')
+      return
+    }
+    el.classList.remove('hidden')
+    el.style.left = `${(p.x * 0.5 + 0.5) * 100}%`
+    el.style.top = `${(-p.y * 0.5 + 0.5) * 100}%`
+  }
+
+  private updateLod() {
+    for (const planet of this.planets) {
+      const dist = this.pos.distanceTo(planet.pos)
+      if (planet.village) planet.village.visible = dist < Math.max(420, planet.def.radius * 4)
+    }
+    for (const poi of this.pois) {
+      poi.getWorldPosition(vA)
+      poi.visible = this.pos.distanceTo(vA) < Math.max(520, (poi.parent?.scale.x ?? 0) * 2)
+    }
+    // Köy figürleri yalnız yörüngeden görülen yaşam izidir: yüzeye inince gerçek yerliler doğar,
+    // gezegen temizlenince ya da üs kurulunca kaybolurlar. Vurulamayan, donmuş yerli kalmaz.
+    for (const planet of this.planets) {
+      const village = planet.village
+      if (!village?.visible) continue
+      const id = planet.def.id
+      const life = !this.cleared.has(id) && !this.colonies[id] && !(this.layer === 'foot' && this.footPlanet === planet)
+      for (const rig of (village.userData.rigs as Rig[] | undefined) ?? []) {
+        rig.root.visible = life
+        if (life) this.stepRig(rig, rig.style === 'hop' ? 2.4 : 1.2, false, 0)
+      }
+    }
+  }
+
+  private buildVillage(def: PlanetDef, mesh: Group) {
+    const g = new Group()
+    g.scale.setScalar(1 / def.radius)
+    const purple = def.village === 'purple'
+    const rigs: Rig[] = []
+    for (let i = 0; i < 6; i++) {
+      const y = 1 - ((i + 0.5) / 6) * 2
+      const ring = Math.sqrt(Math.max(0, 1 - y * y))
+      const phi = i * 2.4
+      const up = new Vector3(Math.cos(phi) * ring, y, Math.sin(phi) * ring).normalize()
+      const hut = buildPoi('hut', purple ? 0x8d5ae0 : def.color)
+      const tangent = new Vector3(0, 1, 0).cross(up)
+      if (tangent.lengthSq() < 1e-4) tangent.set(1, 0, 0)
+      tangent.normalize()
+      const bit = new Vector3().crossVectors(tangent, up).normalize()
+      hut.quaternion.setFromRotationMatrix(new Matrix4().makeBasis(tangent, up, bit))
+      hut.position.copy(up).multiplyScalar(def.radius + 0.4)
+      hut.scale.setScalar(Math.max(2.2, def.radius / 36))
+      g.add(hut)
+      if (i < 4) {
+        const look = nativeLook(def)
+        const rig = buildCreature(look)
+        const size = purple ? 2.4 : 1.8
+        rig.root.position.copy(up).multiplyScalar(def.radius - FEET * size + 0.05).addScaledVector(tangent, 4)
+        rig.root.quaternion.setFromRotationMatrix(new Matrix4().makeBasis(tangent, up, bit))
+        rig.root.scale.setScalar(size)
+        rig.root.userData.rig = rig
+        rigs.push(rig)
+        g.add(rig.root)
+      }
+    }
+    g.userData.rigs = rigs
+    mesh.add(g)
+    this.villages.push(g)
+    return g
+  }
+
+  private spawnFleet(count: number, threat: number, at: Vector3 | undefined, state: FleetState) {
+    const pos = at ? at.clone() : this.randomFleetPos()
+    const root = buildFleetIcon(count)
+    root.position.copy(pos)
+    this.mapRoot.add(root)
+    const fleet: Fleet = {
+      id: ++this.fleetSeq,
+      pos,
+      vel: new Vector3(),
+      threat,
+      count,
+      state,
+      lastKnown: this.pos.clone(),
+      searchLeft: 16,
+      angle: Math.random() * Math.PI * 2,
+      orbit: 26 + Math.random() * 10,
+      center: pos.clone(),
+      root,
+    }
+    this.fleets.push(fleet)
+    if (state === 'hunt') {
+      this.toast('Sinyal yayıldı. Bir filo rotanı aldı.')
+      this.audio.warning()
+    }
+    return fleet
+  }
+
+  private randomFleetPos() {
+    for (let k = 0; k < 8; k++) {
+      const a = Math.random() * Math.PI * 2
+      const elev = (Math.random() - 0.5) * 0.6
+      const rad = 230 + Math.random() * 80
+      vA.set(Math.cos(a), elev, Math.sin(a)).multiplyScalar(rad).add(this.pos)
+      if (vA.length() > 80) return vA.clone()
+    }
+    return this.pos.clone().add(new Vector3(0, 10, -250))
+  }
+
+  private removeFleet(fleet: Fleet) {
+    const i = this.fleets.indexOf(fleet)
+    if (i >= 0) this.fleets.splice(i, 1)
+    this.mapRoot.remove(fleet.root)
+    this.disposeMats(fleet.root)
+  }
+
+  private clearFleets() {
+    for (const f of [...this.fleets]) this.removeFleet(f)
+  }
+
+  private nearestFleet(maxDist: number) {
+    let best: { fleet: Fleet; dist: number } | null = null
+    for (const fleet of this.fleets) {
+      const dist = fleet.pos.distanceTo(this.pos)
+      if (dist < maxDist && (!best || dist < best.dist)) best = { fleet, dist }
+    }
+    return best
+  }
+
+  private spawnFragment(angle?: number, radius?: number, y?: number) {
+    const frag = this.frags.find((f) => !f.alive)
+    if (!frag) return
+    frag.alive = true
+    frag.mesh.visible = true
+    frag.angle = angle ?? Math.random() * Math.PI * 2
+    frag.radius = radius ?? this.fragInner + Math.random() * 260
+    frag.y = y ?? (Math.random() - 0.5) * 40
+    frag.spin = 0.05 + Math.random() * 0.08
+    frag.phase = Math.random() * Math.PI * 2
+    frag.mesh.position.set(Math.cos(frag.angle) * frag.radius, frag.y, Math.sin(frag.angle) * frag.radius)
+  }
+
+  private spawnEnemies(count: number, threat: number, at?: Vector3, small = false) {
+    if (!at) this.clearCombat()
+    const center = at ?? new Vector3(0, 0, -46)
+    const spots = [
+      new Vector3(0, 1, -46),
+      new Vector3(-16, 5, -34),
+      new Vector3(15, -3, -52),
+      new Vector3(-8, 9, -68),
+      new Vector3(12, -7, -28),
+      new Vector3(-22, -4, -40),
+      new Vector3(20, 8, -58),
+      new Vector3(6, -8, -74),
+    ]
+    const attacks = ['bolt', 'homing', 'goo', 'well', 'gate'] as const
+    const room = Math.max(0, 10 - this.enemies.filter((e) => e.alive).length)
+    const n = Math.min(room, small ? Math.max(1, count) : Math.min(8, count + 3))
+    const humanHunt = originById(this.originId).species === 'alien'
+    for (let i = 0; i < n; i++) {
+      let attack = small ? 'bolt' : attacks[i % attacks.length]
+      const human = !small && humanHunt && attack !== 'well' && attack !== 'gate' && i % 3 === 0
+      if (human) attack = 'bolt'
+      const giant = !small && n >= 4 && i >= n - 2
+      const visual = human ? buildHumanFighter() : buildCuteAlien(attack === 'well' || attack === 'gate' ? 4 : i % 4, 1)
+      const scale = small ? 0.8 : giant ? (human ? 2.7 : 3.35) : human ? 1 : 1.05
+      visual.root.scale.setScalar(scale)
+      if (this.universeId === 'kizil' && !human) visual.bodyMat.color.set(0x6a2418)
+      if (this.universeId === 'soluk' && !human) visual.bodyMat.emissive.set(0x123a4a)
+      let weak: Mesh | null = null
+      let bar: Sprite | null = null
+      if (giant) {
+        const weakMat = new MeshBasicMaterial({ color: 0xffe08a })
+        weakMat.toneMapped = false
+        weak = new Mesh(new SphereGeometry(0.22, 10, 8), weakMat)
+        weak.name = 'weak'
+        weak.position.set(0.2, 0.95, 0.4)
+        visual.root.add(weak)
+        const built = buildBar()
+        bar = built.sprite
+        bar.position.set(0, 1.85, 0)
+        bar.scale.set(5.2 / scale, 0.85 / scale, 1)
+        visual.root.add(bar)
+        if (built.ctx) paintBar(built.ctx, built.tex, 1, 1)
+        bar.userData.ctx = built.ctx
+        bar.userData.tex = built.tex
+      }
+      const hull = small ? 18 : (34 + threat * 10) * (giant ? scale * 2.15 : 1)
+      const shield = small ? 0 : (12 + threat * 6) * (giant ? 2.3 : 1)
+      const e: Enemy = {
+        root: visual.root,
+        pos: spots[i % spots.length].clone().add(vH.set(0, 0, 46)).add(center),
+        vel: new Vector3(),
+        quat: new Quaternion(),
+        hullMax: hull,
+        hull,
+        shieldMax: shield,
+        shield,
+        cool: 0.6 + Math.random() + (giant ? 0.8 : 0),
+        strafe: Math.random() < 0.5 ? -1 : 1,
+        strafeT: 1,
+        alive: true,
+        threat,
+        stun: 0,
+        flashT: 0,
+        human,
+        attack,
+        giant,
+        scale,
+        weak,
+        bar,
+        small,
+        bodyFlash: () => {
+          visual.bodyMat.emissiveIntensity = 1.8
+          window.setTimeout(() => {
+            visual.bodyMat.emissiveIntensity = 0.55
+          }, 70)
+        },
+      }
+      quatFromForward(e.quat, vA.set(0, 0, 1))
+      e.root.position.copy(e.pos)
+      e.root.quaternion.copy(e.quat)
+      this.combatRoot.add(e.root)
+      this.enemies.push(e)
+    }
+  }
+
+  private clearCombat() {
+    for (const well of this.enemyWells) {
+      well.alive = false
+      well.owner = null
+      well.mesh.visible = false
+    }
+    for (const e of this.enemies) {
+      this.combatRoot.remove(e.root)
+      this.disposeMats(e.root)
+    }
+    this.enemies.length = 0
+    this.skirmish = false
+    for (const gate of this.enemyGates) {
+      gate.alive = false
+      gate.owner = null
+      gate.mesh.visible = false
+    }
+  }
+
+  private spawnShot(friendly: boolean, origin: Vector3, dir: Vector3, dmg: number, kind: ShotKind = 'bolt', hops = 1) {
+    const shot = this.shots.find((s) => !s.alive && s.friendly === friendly)
+    if (!shot) return
+    const ox = origin.x
+    const oy = origin.y
+    const oz = origin.z
+    const dx = dir.x
+    const dy = dir.y
+    const dz = dir.z
+    shot.alive = true
+    shot.age = 0
+    shot.dmg = dmg
+    shot.hops = hops
+    shot.kind = kind
+    shot.mesh.material = this.shotMat(kind, friendly)
+    if (kind === 'goo') shot.mesh.scale.set(3.1, 3.1, 0.9)
+    else if (kind === 'homing' || kind === 'rocket') shot.mesh.scale.set(0.7, 0.7, 2.1)
+    else if (kind === 'plasma') shot.mesh.scale.set(1.25, 1.25, 1.25)
+    else if (kind === 'pellet') shot.mesh.scale.set(0.42, 0.42, 0.42)
+    else if (kind === 'laser' || kind === 'chain') shot.mesh.scale.set(0.12, 0.12, 3.1)
+    else shot.mesh.scale.set(1.35, 1.35, 1.6)
+    const speed =
+      kind === 'laser' || kind === 'chain' ? 320 : kind === 'pellet' ? 150 : kind === 'rocket' ? 74 : kind === 'plasma' ? 102 : kind === 'goo' ? 38 : kind === 'homing' ? 82 : friendly ? 215 : 128
+    shot.vel.set(dx, dy, dz).multiplyScalar(speed)
+    shot.pos.set(ox + dx * 1.6, oy + dy * 1.6, oz + dz * 1.6)
+    shot.prev.copy(shot.pos)
+    shot.mesh.visible = true
+    shot.mesh.position.copy(shot.pos)
+  }
+
+  private killShot(shot: Shot) {
+    shot.alive = false
+    shot.mesh.visible = false
+  }
+
+  private clearShots() {
+    for (const s of this.shots) this.killShot(s)
+  }
+
+  private spawnBoom(pos: Vector3, scale: number, color = 0xffd2b4) {
+    const b = this.booms.find((x) => !x.alive) ?? this.booms[0]
+    b.alive = true
+    b.age = 0
+    b.life = 0.55 + scale * 0.25
+    b.points.position.copy(pos)
+    b.sprite.position.copy(pos)
+    b.points.visible = true
+    b.sprite.visible = true
+    b.mat.color.set(color)
+    b.mat.opacity = 1
+    b.spriteMat.color.set(color)
+    b.sprite.scale.setScalar(scale * 2)
+    for (let i = 0; i < b.positions.length; i += 3) {
+      b.positions[i] = 0
+      b.positions[i + 1] = 0
+      b.positions[i + 2] = 0
+      const dir = vA.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize()
+      const sp = (4 + Math.random() * 14) * scale
+      b.vels[i] = dir.x * sp
+      b.vels[i + 1] = dir.y * sp
+      b.vels[i + 2] = dir.z * sp
+    }
+    b.points.geometry.attributes.position.needsUpdate = true
+  }
+
+  private disposeMats(root: THREEGroup) {
+    const gone = new Set<object>()
+    root.traverse((obj) => {
+      const mesh = obj as Mesh
+      const mat = mesh.material as { dispose?: () => void } | { dispose?: () => void }[] | undefined
+      if (!mat) return
+      const list = Array.isArray(mat) ? mat : [mat]
+      for (const m of list) {
+        if (!m || gone.has(m) || !m.dispose) continue
+        gone.add(m)
+        m.dispose()
+      }
+    })
+  }
+
+  private fadeTo(apply: () => void) {
+    const token = ++this.fadeToken
+    this.fading = true
+    this.dom.fade.classList.add('on')
+    window.setTimeout(() => {
+      if (token !== this.fadeToken) return
+      apply()
+      this.fading = false
+      this.snapCamera = true
+      this.applyPresentation()
+      this.dom.fade.classList.remove('on')
+    }, 420)
+  }
+
+  private toggleMute() {
+    if (this.save.settings.volume > 0.01) {
+      this.muteMem = this.save.settings.volume
+      this.setVolume(0)
+    } else this.setVolume(this.muteMem || 0.72)
+  }
+
+  private setVolume(v: number) {
+    this.save.settings.volume = v
+    this.audio.setVolume(v)
+    this.dom.vol.value = String(v)
+    writeSave(this.save)
+  }
+
+  private setEasy(on: boolean) {
+    this.save.settings.easy = on
+    this.dom.easyTitle.checked = on
+    this.dom.easyPause.checked = on
+    writeSave(this.save)
+  }
+
+  private syncSettingsUi() {
+    this.dom.easyTitle.checked = this.save.settings.easy
+    this.dom.easyPause.checked = this.save.settings.easy
+    this.dom.vol.value = String(this.save.settings.volume)
+    this.dom.sens.value = String(this.save.settings.sens)
+    this.dom.dead.value = String(this.save.settings.stickDead)
+    this.dom.stick.value = String(this.save.settings.stickSens)
+  }
+
+  /** Ev gezegenine rota: başka sistemdeysen kapı kapı, evdeysen doğrudan gezegene. */
+  private routeHome() {
+    const home = homeSystem(this.originId)
+    const planet = UNIVERSES[home].planets.find((p) => p.home)
+    this.route = planet ? { kind: 'planet', id: planet.id, system: home } : { kind: 'worm', id: home, system: home }
+    const hops = this.hopsTo(home)
+    this.toast(hops > 0 ? `Rota: eve (${UNIVERSES[home].name}) · ${hops} kapı` : `Rota: ${planet?.name ?? 'ev'}`)
+  }
+
+  /** Kapı ağında iki sistem arası en az geçiş sayısı. */
+  private hopsTo(goal: UniId, from: UniId = this.universeId) {
+    if (goal === from) return 0
+    const dist = new Map<UniId, number>([[from, 0]])
+    const queue: UniId[] = [from]
+    while (queue.length) {
+      const cur = queue.shift() as UniId
+      for (const h of UNIVERSES[cur].holes) {
+        if (h.kind !== 'worm' || !h.to || dist.has(h.to)) continue
+        dist.set(h.to, (dist.get(cur) ?? 0) + 1)
+        if (h.to === goal) return dist.get(h.to) ?? -1
+        queue.push(h.to)
+      }
+    }
+    return -1
+  }
+
+  /** Kapı ağı: zayıf ırklar solda, en gelişmişler sağda. Bulunduğun yer, evin ve rotanın yolu işaretli. */
+  static readonly NET_LAYOUT: Record<UniId, [number, number]> = {
+    gunes: [0.08, 0.27],
+    marskol: [0.08, 0.73],
+    avlu: [0.23, 0.5],
+    alpha: [0.38, 0.17],
+    proxima: [0.38, 0.83],
+    kizil: [0.5, 0.5],
+    k218: [0.62, 0.17],
+    kepler186: [0.62, 0.83],
+    trappist: [0.75, 0.33],
+    soluk: [0.75, 0.67],
+    gliese: [0.88, 0.3],
+    kepler452: [0.92, 0.7],
+  }
+
+  private routePath(): UniId[] {
+    const goal = this.route?.system
+    if (!goal) return []
+    const path: UniId[] = [this.universeId]
+    let cur = this.universeId
+    for (let i = 0; i < 12 && cur !== goal; i++) {
+      const next = this.nextGate(cur, goal)
+      if (!next) break
+      path.push(next)
+      cur = next
+    }
+    return path
+  }
+
+  private drawNetMap() {
+    const canvas = must<HTMLCanvasElement>('net-map')
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    const W = canvas.width
+    const H = canvas.height
+    ctx.clearRect(0, 0, W, H)
+    const at = (id: UniId) => [Game.NET_LAYOUT[id][0] * W, Game.NET_LAYOUT[id][1] * H] as const
+    const path = this.routePath()
+    const onPath = (a: UniId, b: UniId) => {
+      for (let i = 0; i + 1 < path.length; i++) if ((path[i] === a && path[i + 1] === b) || (path[i] === b && path[i + 1] === a)) return true
+      return false
+    }
+    const ids = Object.keys(UNIVERSES) as UniId[]
+    ctx.lineCap = 'round'
+    for (const a of ids) {
+      for (const h of UNIVERSES[a].holes) {
+        if (h.kind !== 'worm' || !h.to || a > h.to) continue
+        const [x1, y1] = at(a)
+        const [x2, y2] = at(h.to)
+        const hot = onPath(a, h.to)
+        ctx.strokeStyle = hot ? '#ffe27a' : 'rgba(122,215,255,0.35)'
+        ctx.lineWidth = hot ? 7 : 3
+        ctx.beginPath()
+        ctx.moveTo(x1, y1)
+        ctx.lineTo(x2, y2)
+        ctx.stroke()
+      }
+    }
+    const home = homeSystem(this.originId)
+    const owner = new Map<UniId, OriginId>()
+    for (const o of ORIGINS) owner.set(homeSystem(o.id), o.id)
+    ctx.textAlign = 'center'
+    for (const id of ids) {
+      const [x, y] = at(id)
+      const here = id === this.universeId
+      const mine = id === home
+      const race = owner.get(id)
+      ctx.fillStyle = here ? '#ffe27a' : mine ? '#7dff8a' : race ? '#e4a15c' : '#8a93a6'
+      ctx.beginPath()
+      ctx.arc(x, y, here ? 20 : 15, 0, Math.PI * 2)
+      ctx.fill()
+      if (here) {
+        ctx.strokeStyle = '#ffffff'
+        ctx.lineWidth = 3
+        ctx.stroke()
+      }
+      ctx.fillStyle = '#f3ead8'
+      ctx.font = `${here || mine ? 'bold ' : ''}26px sans-serif`
+      ctx.fillText(`${mine ? '⌂ ' : ''}${UNIVERSES[id].name}`, x, y - 28)
+      ctx.font = '20px sans-serif'
+      ctx.fillStyle = '#c9b89a'
+      const tag = race ? originLook(race).name : 'ara bölge'
+      ctx.fillText(tag, x, y + 40)
+    }
+    const hops = this.hopsTo(home)
+    this.domSet('net-line', `Sarı: buradasın · Yeşil: evin · Turuncu: başka ırkların evi · ${hops > 0 ? `eve ${hops} kapı` : 'evdesin'}. Bir sisteme dokun: oraya rota.`)
+  }
+
+  private netClick(event: MouseEvent) {
+    const canvas = event.currentTarget as HTMLCanvasElement
+    const rect = canvas.getBoundingClientRect()
+    const x = ((event.clientX - rect.left) / rect.width) * canvas.width
+    const y = ((event.clientY - rect.top) / rect.height) * canvas.height
+    let best: UniId | null = null
+    let bestD = 70
+    for (const id of Object.keys(Game.NET_LAYOUT) as UniId[]) {
+      const d = Math.hypot(Game.NET_LAYOUT[id][0] * canvas.width - x, Game.NET_LAYOUT[id][1] * canvas.height - y)
+      if (d < bestD) {
+        bestD = d
+        best = id
+      }
+    }
+    if (!best) return
+    if (best === this.universeId) return
+    const planet = UNIVERSES[best].planets.find((p) => p.home)
+    this.route = planet ? { kind: 'planet', id: planet.id, system: best } : { kind: 'worm', id: best, system: best }
+    this.toast(`Rota: ${UNIVERSES[best].name} · ${this.hopsTo(best)} kapı`)
+    this.drawNetMap()
+  }
+
+  private openMap() {
+    this.drawNetMap()
+    const list = must<HTMLDivElement>('map-list')
+    list.innerHTML = ''
+    const add = (label: string, route: RouteTarget) => {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.textContent = label
+      btn.addEventListener('click', () => {
+        this.route = route
+        must<HTMLElement>('starmap').classList.add('hidden')
+        this.toast(`Rota: ${label}`)
+      })
+      list.append(btn)
+    }
+    for (const planet of this.planets) {
+      if (planet.def.heat) continue
+      const colony = this.colonies[planet.def.id]
+      const tag = colony ? (!this.mine(colony) ? ` · ${factionName(colony.owner)}` : colony.kind === 'main' ? ' · Ana üs' : colony.founded ? ' · Koloni' : ' · Karakol') : ''
+      add(`${planet.def.name}${tag}`, { kind: 'planet', id: planet.def.id, system: this.universeId })
+    }
+    for (const hole of this.holes) {
+      if (hole.kind !== 'worm' || !hole.to) continue
+      add(`Eşik → ${UNIVERSES[hole.to].name}`, { kind: 'worm', id: hole.to, system: this.universeId })
+    }
+    for (const origin of ORIGINS) {
+      const system = homeSystem(origin.id)
+      if (system === this.universeId) continue
+      add(`Sistem · ${UNIVERSES[system].name}`, { kind: 'worm', id: system, system })
+    }
+    must<HTMLElement>('starmap').classList.remove('hidden')
+  }
+
+  private hideControls() {
+    this.dom.controls.classList.add('hidden')
+  }
+
+  private showControls() {
+    this.dom.controls.classList.remove('hidden')
+  }
+
+  private bindUi() {
+    const click = () => this.audio.ensure()
+    window.addEventListener('pointerdown', click)
+    window.addEventListener('keydown', () => this.audio.ensure())
+    this.dom.intro.addEventListener('pointerdown', (e) => {
+      if (this.mode !== 'intro') return
+      e.preventDefault()
+      this.skipIntro()
+    })
+    must<HTMLButtonElement>('btn-start').addEventListener('click', () => {
+      this.audio.ensure()
+      this.audio.ui()
+      this.openSelect()
+    })
+    must<HTMLButtonElement>('sel-go').addEventListener('click', () => this.startRun())
+    must<HTMLButtonElement>('sel-prev').addEventListener('click', () => this.stepOrigin(-1))
+    must<HTMLButtonElement>('sel-next').addEventListener('click', () => this.stepOrigin(1))
+    must<HTMLButtonElement>('ab1').addEventListener('click', () => this.tryAbility(1))
+    must<HTMLButtonElement>('ab2').addEventListener('click', () => this.tryAbility(2))
+    must<HTMLButtonElement>('btn-controls').addEventListener('click', () => this.showControls())
+    must<HTMLButtonElement>('btn-map').addEventListener('click', () => this.openMap())
+    must<HTMLButtonElement>('map-home').addEventListener('click', () => {
+      this.routeHome()
+      must<HTMLElement>('starmap').classList.add('hidden')
+    })
+    must<HTMLCanvasElement>('net-map').addEventListener('click', (event) => this.netClick(event))
+    document.querySelector<HTMLElement>('.radar-wrap')?.addEventListener('click', (event) => {
+      event.stopPropagation()
+      this.toggleRadar()
+    })
+    must<HTMLButtonElement>('map-close').addEventListener('click', () => must<HTMLElement>('starmap').classList.add('hidden'))
+    must<HTMLButtonElement>('controls-close').addEventListener('click', () => this.hideControls())
+    must<HTMLButtonElement>('pa-resume').addEventListener('click', () => this.resume())
+    must<HTMLButtonElement>('pa-controls').addEventListener('click', () => this.showControls())
+    must<HTMLButtonElement>('pa-upgrade').addEventListener('click', () => this.openUpgrades())
+    must<HTMLButtonElement>('pa-restart').addEventListener('click', () => this.openSelect())
+    must<HTMLButtonElement>('pa-menu').addEventListener('click', () => this.goTitle())
+    must<HTMLButtonElement>('up-continue').addEventListener('click', () => this.continueRun())
+    must<HTMLButtonElement>('go-retry').addEventListener('click', () => this.openSelect())
+    must<HTMLButtonElement>('go-menu').addEventListener('click', () => this.goTitle())
+    this.dom.easyTitle.addEventListener('change', () => this.setEasy(this.dom.easyTitle.checked))
+    this.dom.easyPause.addEventListener('change', () => this.setEasy(this.dom.easyPause.checked))
+    this.dom.vol.addEventListener('input', () => this.setVolume(Number(this.dom.vol.value)))
+    this.dom.sens.addEventListener('input', () => {
+      this.save.settings.sens = Number(this.dom.sens.value)
+      writeSave(this.save)
+    })
+    this.dom.dead.addEventListener('input', () => {
+      this.save.settings.stickDead = Number(this.dom.dead.value)
+      writeSave(this.save)
+    })
+    this.dom.stick.addEventListener('input', () => {
+      this.save.settings.stickSens = Number(this.dom.stick.value)
+      writeSave(this.save)
+    })
+    this.renderer.domElement.addEventListener('click', () => {
+      if (this.mode === 'map' || this.mode === 'combat') this.input.requestLock()
+    })
+  }
+
+  private domSet(id: string, text: string) {
+    const el = document.getElementById(id)
+    if (el && el.textContent !== text) el.textContent = text
+  }
+
+  private buildSky() {
+    const n = 3400
+    const pos = new Float32Array(n * 3)
+    const phase = new Float32Array(n)
+    const size = new Float32Array(n)
+    const col = new Float32Array(n * 3)
+    for (let i = 0; i < n; i++) {
+      const u = Math.random()
+      const v = Math.random()
+      const th = 2 * Math.PI * u
+      const ph = Math.acos(2 * v - 1)
+      const r = SKY_RADIUS * (0.86 + Math.random() * 0.1)
+      pos[i * 3] = Math.sin(ph) * Math.cos(th) * r
+      pos[i * 3 + 1] = Math.cos(ph) * r
+      pos[i * 3 + 2] = Math.sin(ph) * Math.sin(th) * r
+      phase[i] = Math.random() * Math.PI * 2
+      size[i] = Math.random() < 0.06 ? 2.6 + Math.random() * 1.8 : 1.1 + Math.random() * 1.1
+      const roll = Math.random()
+      if (roll > 0.92) {
+        col[i * 3] = 1
+        col[i * 3 + 1] = 0.84
+        col[i * 3 + 2] = 0.68
+      } else if (roll < 0.1) {
+        col[i * 3] = 0.7
+        col[i * 3 + 1] = 0.82
+        col[i * 3 + 2] = 1
+      } else {
+        const g = 0.75 + Math.random() * 0.25
+        col[i * 3] = g
+        col[i * 3 + 1] = g
+        col[i * 3 + 2] = g + 0.04
+      }
+    }
+    const geo = new BufferGeometry()
+    geo.setAttribute('position', new BufferAttribute(pos, 3))
+    geo.setAttribute('aPhase', new BufferAttribute(phase, 1))
+    geo.setAttribute('aSize', new BufferAttribute(size, 1))
+    geo.setAttribute('color', new BufferAttribute(col, 3))
+    this.starMat = new ShaderMaterial({
+      uniforms: { uTime: { value: 0 }, uTint: { value: new Color(1, 1, 1) } },
+      vertexShader: starVert,
+      fragmentShader: starFrag,
+      transparent: true,
+      depthWrite: false,
+      blending: AdditiveBlending,
+    })
+    const stars = new Points(geo, this.starMat)
+    stars.frustumCulled = false
+    stars.renderOrder = -10
+    this.scene.add(stars)
+    this.stars = stars
+    this.nebulaMat = new ShaderMaterial({
+      uniforms: { uTime: { value: 0 }, uTint: { value: new Color(1, 1, 1) } },
+      vertexShader: nebulaVert,
+      fragmentShader: nebulaFrag,
+      side: BackSide,
+      depthWrite: true,
+    })
+    const sky = new Mesh(new SphereGeometry(SKY_RADIUS, 48, 32), this.nebulaMat)
+    sky.frustumCulled = false
+    sky.renderOrder = -20
+    this.scene.add(sky)
+    this.sky = sky
+  }
+
+  private buildDisk() {
+    const mat = new ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uInner: { value: 24 },
+        uOuter: { value: 112 },
+        uAlpha: { value: 0 },
+        uHot: { value: new Color(1.25, 1.05, 0.82) },
+        uMid: { value: new Color(0.95, 0.4, 0.09) },
+        uEdge: { value: new Color(0.28, 0.045, 0.015) },
+      },
+      vertexShader: diskVert,
+      fragmentShader: diskFrag,
+      transparent: true,
+      depthWrite: false,
+      blending: AdditiveBlending,
+      side: DoubleSide,
+    })
+    this.diskGeo = new RingGeometry(24, 112, 128, 4)
+    return mat
+  }
+
+  private buildMotes() {
+    const n = 180
+    const pos = new Float32Array(n * 3)
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2
+      const r = 50 + Math.random() * 260
+      pos[i * 3] = Math.cos(a) * r
+      pos[i * 3 + 1] = (Math.random() - 0.5) * 70
+      pos[i * 3 + 2] = Math.sin(a) * r
+    }
+    const geo = new BufferGeometry()
+    geo.setAttribute('position', new BufferAttribute(pos, 3))
+    const motes = new Points(
+      geo,
+      new PointsMaterial({ color: 0xaeb6c4, size: 0.35, transparent: true, opacity: 0.35, depthWrite: false }),
+    )
+    this.mapRoot.add(motes)
+  }
+
+  private buildIntro() {
+    const n = 1500
+    this.introPos = new Float32Array(n * 3)
+    this.introVel = new Float32Array(n * 3)
+    this.introHome = new Float32Array(n * 3)
+    this.resetIntroParticles()
+    const geo = new BufferGeometry()
+    geo.setAttribute('position', new BufferAttribute(this.introPos, 3))
+    const mat = new PointsMaterial({
+      color: 0xe7eefc,
+      size: 1.7,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      blending: AdditiveBlending,
+      sizeAttenuation: true,
+    })
+    const pts = new Points(geo, mat)
+    pts.frustumCulled = false
+    pts.visible = false
+    this.scene.add(pts)
+    return pts
+  }
+
+  private resetIntroParticles() {
+    const n = this.introPos.length / 3
+    for (let i = 0; i < n; i++) {
+      const arm = i % 3
+      const u = (i % Math.floor(n / 3)) / (n / 3)
+      const ang = u * Math.PI * 5.5 + arm * ((Math.PI * 2) / 3)
+      const rad = 5 + u * 46
+      this.introHome[i * 3] = Math.cos(ang) * rad
+      this.introHome[i * 3 + 1] = (Math.random() - 0.5) * 3.5
+      this.introHome[i * 3 + 2] = Math.sin(ang) * rad
+      const th = Math.random() * Math.PI * 2
+      const ph = Math.acos(2 * Math.random() - 1)
+      const sp = 10 + Math.random() * 28
+      this.introVel[i * 3] = Math.sin(ph) * Math.cos(th) * sp
+      this.introVel[i * 3 + 1] = Math.cos(ph) * sp
+      this.introVel[i * 3 + 2] = Math.sin(ph) * Math.sin(th) * sp
+      this.introPos[i * 3] = 0
+      this.introPos[i * 3 + 1] = 0
+      this.introPos[i * 3 + 2] = 0
+    }
+  }
+
+  private stepIntroParticles(dt: number) {
+    const attr = this.introPoints.geometry.attributes.position as BufferAttribute
+    const mat = this.introPoints.material as PointsMaterial
+    const swirl = smoothstep(15, 26, this.introT)
+    mat.opacity = this.introT < 4.6 ? 0 : 1 - smoothstep(25, 32, this.introT)
+    mat.color.set(this.introT < 8 ? 0xffffff : this.introT < 16 ? 0xffe1c4 : 0xb7c6ea)
+    if (this.introT < 4.6) {
+      attr.needsUpdate = true
+      return
+    }
+    for (let i = 0; i < this.introPos.length; i += 3) {
+      let x = this.introPos[i]
+      let y = this.introPos[i + 1]
+      let z = this.introPos[i + 2]
+      x += this.introVel[i] * dt * (1 - swirl)
+      y += this.introVel[i + 1] * dt * (1 - swirl)
+      z += this.introVel[i + 2] * dt * (1 - swirl)
+      this.introVel[i] *= 1 - dt * 0.28
+      this.introVel[i + 1] *= 1 - dt * 0.28
+      this.introVel[i + 2] *= 1 - dt * 0.28
+      if (swirl > 0) {
+        x += (this.introHome[i] - x) * swirl * dt * 1.5
+        y += (this.introHome[i + 1] - y) * swirl * dt * 1.5
+        z += (this.introHome[i + 2] - z) * swirl * dt * 1.5
+      }
+      this.introPos[i] = x
+      this.introPos[i + 1] = y
+      this.introPos[i + 2] = z
+    }
+    attr.needsUpdate = true
+  }
+
+  private buildPools() {
+    const friendlyMat = new MeshBasicMaterial({ color: 0xffe1c4 })
+    friendlyMat.color.multiplyScalar(2.1)
+    friendlyMat.toneMapped = false
+    this.boltMat = new MeshBasicMaterial({ color: 0xff4a3a })
+    this.boltMat.color.multiplyScalar(1.8)
+    this.boltMat.toneMapped = false
+    this.homingMat = new MeshBasicMaterial({ color: 0xffb15a })
+    this.homingMat.color.multiplyScalar(1.7)
+    this.homingMat.toneMapped = false
+    this.gooMat = new MeshBasicMaterial({ color: 0x7dff72 })
+    this.gooMat.color.multiplyScalar(1.5)
+    this.gooMat.toneMapped = false
+    this.laserMat = new MeshBasicMaterial({ color: 0x9ae7ff })
+    this.laserMat.toneMapped = false
+    this.pelletMat = new MeshBasicMaterial({ color: 0xffe08a })
+    this.pelletMat.toneMapped = false
+    this.rocketMat = new MeshBasicMaterial({ color: 0xff8a3a })
+    this.rocketMat.toneMapped = false
+    this.plasmaMat = new MeshBasicMaterial({ color: 0xd07bff })
+    this.plasmaMat.toneMapped = false
+    this.chainMat = new MeshBasicMaterial({ color: 0xf4f7ff })
+    this.chainMat.toneMapped = false
+    const geo = new BoxGeometry(0.07, 0.07, 1.7)
+    for (let i = 0; i < 48; i++) {
+      const friendly = i < 24
+      const mesh = new Mesh(geo, friendly ? friendlyMat : this.boltMat)
+      mesh.visible = false
+      mesh.frustumCulled = false
+      this.scene.add(mesh)
+      this.shots.push({
+        alive: false,
+        friendly,
+        pos: new Vector3(),
+        prev: new Vector3(),
+        vel: new Vector3(),
+        age: 0,
+        dmg: 0,
+        kind: 'bolt',
+        hops: 1,
+        mesh,
+      })
+    }
+    for (let i = 0; i < 6; i++) {
+      const count = 22
+      const positions = new Float32Array(count * 3)
+      const geometry = new BufferGeometry()
+      geometry.setAttribute('position', new BufferAttribute(positions, 3))
+      const mat = new PointsMaterial({
+        color: 0xffd2b4,
+        size: 0.55,
+        transparent: true,
+        opacity: 1,
+        depthWrite: false,
+        blending: AdditiveBlending,
+      })
+      const points = new Points(geometry, mat)
+      points.frustumCulled = false
+      points.visible = false
+      const spriteMat = new SpriteMaterial({
+        map: glowTexture(),
+        color: 0xffd2b4,
+        transparent: true,
+        depthWrite: false,
+        blending: AdditiveBlending,
+        opacity: 0.8,
+      })
+      spriteMat.toneMapped = false
+      const sprite = new Sprite(spriteMat)
+      sprite.visible = false
+      this.scene.add(points, sprite)
+      this.booms.push({
+        alive: false,
+        age: 0,
+        life: 0.8,
+        points,
+        positions,
+        vels: new Float32Array(count * 3),
+        mat,
+        sprite,
+        spriteMat,
+      })
+    }
+    for (let i = 0; i < 16; i++) {
+      const mesh = buildFragment()
+      mesh.visible = false
+      this.mapRoot.add(mesh)
+      this.frags.push({
+        alive: false,
+        angle: 0,
+        radius: 150,
+        y: 0,
+        spin: 0.08,
+        phase: 0,
+        mesh,
+      })
+    }
+  }
+
+  private patchLens() {
+    const pass = this.lensPass
+    const orig = pass.render.bind(pass)
+    pass.render = (renderer: WebGLRenderer, write: WebGLRenderTarget, read: WebGLRenderTarget, delta?: number, mask?: boolean) => {
+      pass.uniforms.tDepth.value = read.depthTexture
+      orig(renderer, write, read, delta ?? 0, mask ?? false)
+    }
+  }
+
+  private attachDepth(rt: WebGLRenderTarget) {
+    if (!rt.depthTexture) {
+      const depth = new DepthTexture(rt.width, rt.height)
+      depth.type = UnsignedIntType
+      depth.format = DepthFormat
+      rt.depthTexture = depth
+    } else {
+      rt.depthTexture.image.width = rt.width
+      rt.depthTexture.image.height = rt.height
+    }
+  }
+
+  private applySize() {
+    const w = window.innerWidth
+    const h = Math.max(1, window.innerHeight)
+    this.renderer.setPixelRatio(this.pr)
+    this.renderer.setSize(w, h, false)
+    this.camera.aspect = w / h
+    this.camera.updateProjectionMatrix()
+    this.composer.setPixelRatio(this.pr)
+    this.composer.setSize(w, h)
+    this.attachDepth(this.composer.renderTarget1)
+    this.attachDepth(this.composer.renderTarget2)
+  }
+
+  private origin() {
+    return originById(this.originId)
+  }
+
+  private showShip(id: OriginId) {
+    this.originId = id
+    const index = ORIGINS.findIndex((o) => o.id === id)
+    if (index >= 0) this.originIndex = index
+    if (!this.ships[id]) {
+      const ship = buildShip(id)
+      this.scene.add(ship.root)
+      this.ships[id] = ship
+    }
+    if (!this.pilots[id]) {
+      const pilot = buildPilot(id)
+      pilot.visible = false
+      this.scene.add(pilot)
+      this.pilots[id] = pilot
+    }
+    for (const item of ORIGINS) {
+      const ship = this.ships[item.id]
+      if (ship) ship.root.visible = false
+      const pilot = this.pilots[item.id]
+      if (pilot) pilot.visible = false
+    }
+    this.visual = this.ships[id] as PlayerVisual
+    this.ensureBeacon()
+    this.syncWalker()
+  }
+
+  /** Yürüyen karakter, seçilen türün görünümünü taşır. */
+  private syncWalker() {
+    const look = originLook(this.originId)
+    if (this.walker && this.walkerLook === look.id) return
+    if (this.walker) {
+      this.flash.forget(this.walker)
+      this.mapRoot.remove(this.walker)
+      this.disposeMats(this.walker)
+    }
+    this.walkerRig = buildCreature(look)
+    this.walker = this.walkerRig.root
+    this.walker.visible = false
+    this.mapRoot.add(this.walker)
+    this.swing = new Swing(this.walker)
+    this.walkerLook = look.id
+  }
+
+  private openSelect() {
+    this.fadeToken++
+    this.fading = false
+    this.ending = false
+    this.dom.fade.classList.remove('on')
+    this.mode = 'select'
+    this.showShip(this.originId)
+    this.renderSelect()
+    this.hideControls()
+    this.input.exitLock()
+    this.applyPresentation()
+  }
+
+  private stepOrigin(dir: number) {
+    this.originIndex = (this.originIndex + dir + ORIGINS.length) % ORIGINS.length
+    this.showShip(ORIGINS[this.originIndex].id)
+    this.renderSelect()
+    this.audio.ui()
+  }
+
+  private renderSelect() {
+    const o = this.origin()
+    this.domSet('sel-planet', o.planet)
+    this.domSet('sel-dist', o.distance)
+    this.domSet('sel-fact', o.fact)
+    const foot = footTrait(o.id)
+    this.domSet('sel-pilot', `${o.pilot} · gemi ${o.ship} · yerde ${originLook(o.id).name}: ${foot.blurb}`)
+    this.domSet('sel-ability', o.abilityText)
+    const legend = must<HTMLElement>('sel-legend')
+    legend.classList.toggle('hidden', !o.legend)
+    legend.textContent = this.wins > 0 ? 'Efsane · kanıtlandı' : 'Efsane · zor kazanılan'
+    drawPortrait(must<HTMLCanvasElement>('sel-portrait'), o.id)
+    const stats = must<HTMLDivElement>('sel-stats')
+    const bar = (label: string, n: number) => `<div class="stat"><span>${label}</span><i style="--w:${n * 20}%"></i></div>`
+    stats.innerHTML = `${bar('Hız', o.speed)}${bar('Zırh', o.armor)}${bar('Silah', o.weaponBar)}${bar('Giz', o.stealthBar)}`
+    const row = must<HTMLDivElement>('sel-bar')
+    if (!row.dataset.wheel) {
+      row.dataset.wheel = '1'
+      row.addEventListener(
+        'wheel',
+        (event) => {
+          if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return
+          row.scrollLeft += event.deltaY
+          event.preventDefault()
+        },
+        { passive: false },
+      )
+    }
+    row.innerHTML = ''
+    ORIGINS.forEach((item, i) => {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.textContent = item.id === 'kepler452' ? '452b' : item.planet.split(' ')[0]
+      if (i === this.originIndex) button.classList.add('on')
+      button.addEventListener('click', () => {
+        this.originIndex = i
+        this.showShip(item.id)
+        this.renderSelect()
+      })
+      row.append(button)
+    })
+    const active = row.children[this.originIndex] as HTMLElement | undefined
+    if (this.originIndex === 0) row.scrollLeft = 0
+    else active?.scrollIntoView({ inline: 'nearest', block: 'nearest' })
+  }
+
+  private updateSelect(_dt: number) {
+    const wobble = this.originId === 'alpha' ? Math.sin(this.clockT * 6.5) * 0.2 : 0
+    this.visual.root.position.set(30, 1.6 + Math.sin(this.clockT * 1.5) * 0.05, 4)
+    this.visual.root.rotation.set(0.15, -0.7 + this.clockT * 0.2, wobble)
+    const pilot = this.pilots[this.originId]
+    if (pilot) {
+      pilot.visible = true
+      const hop = this.originId === 'alpha' ? 0.22 : 0.05
+      pilot.position.set(36.5, 0.15 + Math.abs(Math.sin(this.clockT * (this.originId === 'alpha' ? 3.4 : 1.7))) * hop, 2.2)
+      pilot.rotation.set(0, -0.4 + Math.sin(this.clockT * 0.6) * 0.3, wobble)
+      pilot.scale.setScalar(this.originId === 'alpha' ? 1.7 : 1.15)
+    }
+    this.camera.position.set(24, 4.2, 14)
+    this.camera.up.set(0, 1, 0)
+    this.camera.lookAt(33, 2.1, 3)
+    this.diskMat.uniforms.uAlpha.value = 1
+  }
+
+  private layoutUniverse(id: UniId) {
+    const uni = UNIVERSES[id]
+    this.universeId = id
+    const holeDefs = uni.holes.filter((h) => h.kind === 'hole')
+    const wormDefs = uni.holes.filter((h) => h.kind === 'worm')
+    while (this.diskMeshes.length < holeDefs.length) {
+      const mesh = new Mesh(this.diskGeo, this.diskMat)
+      mesh.rotation.x = -Math.PI / 2
+      mesh.renderOrder = 1
+      this.mapRoot.add(mesh)
+      this.diskMeshes.push(mesh)
+    }
+    while (this.wormMeshes.length < wormDefs.length) {
+      const worm = buildWormhole()
+      this.mapRoot.add(worm)
+      this.wormMeshes.push(worm)
+    }
+    for (const mesh of this.diskMeshes) mesh.visible = false
+    for (const worm of this.wormMeshes) worm.visible = false
+    this.holes = []
+    holeDefs.forEach((def, i) => {
+      const disk = this.diskMeshes[i]
+      disk.visible = true
+      disk.position.set(def.x, def.y, def.z)
+      disk.scale.setScalar(Math.max(0.5, def.rs / 18))
+      this.holes.push({
+        kind: 'hole',
+        pos: disk.position,
+        rs: def.rs,
+        gm: def.gm,
+        curve: def.curve,
+        disk,
+        worm: null,
+      })
+    })
+    wormDefs.forEach((def, i) => {
+      const worm = this.wormMeshes[i]
+      worm.visible = true
+      worm.position.set(def.x, def.y, def.z)
+      const label = worm.getObjectByName('label')
+      if (label && def.to) paintLabel(label as Sprite, `→ ${UNIVERSES[def.to].name}`)
+      this.holes.push({
+        kind: 'worm',
+        pos: worm.position,
+        rs: 0,
+        gm: 0,
+        curve: 1,
+        to: def.to,
+        disk: null,
+        worm,
+      })
+    })
+    this.layoutPlanets(uni)
+    const paint = (value: { set?: (hex: number) => void; setRGB?: (r: number, g: number, b: number) => void }, rgb: [number, number, number]) => {
+      if (value.setRGB) value.setRGB(rgb[0], rgb[1], rgb[2])
+    }
+    paint(this.nebulaMat.uniforms.uTint.value as Color, uni.tint)
+    paint(this.starMat.uniforms.uTint.value as Color, uni.tint)
+    paint(this.diskMat.uniforms.uHot.value as Color, uni.hot)
+    paint(this.diskMat.uniforms.uMid.value as Color, uni.mid)
+    paint(this.diskMat.uniforms.uEdge.value as Color, uni.edge)
+    if (this.lensPass) {
+      const lensTint = this.lensPass.uniforms.uTint.value as Vector3
+      lensTint.set(uni.tint[0], uni.tint[1], uni.tint[2])
+    }
+    const sun = this.planets.find((p) => p.def.heat)
+    if (this.holes[0]) this.bhLight.position.copy(this.holes[0].pos)
+    else if (sun) this.bhLight.position.copy(sun.pos)
+    else if (this.planets[0]) this.bhLight.position.copy(this.planets[0].pos)
+    this.scene.fog = new FogExp2(new Color(uni.fog[0], uni.fog[1], uni.fog[2]), uni.fogDensity)
+    this.domSet('uni-name', uni.name)
+    // Evrenin boyuna göre: dış sınır en uzak yörüngenin ötesinde, parçalar merkez gövdenin dışında.
+    let far = 0
+    for (const def of uni.planets) far = Math.max(far, Math.hypot(def.x, def.y, def.z) + def.radius * (def.rings ? 1.7 : 1))
+    for (const h of uni.holes) far = Math.max(far, Math.hypot(h.x, h.y, h.z))
+    this.mapLimit = Math.max(MAP_LIMIT, far + 900)
+    const core = uni.planets.find((def) => Math.hypot(def.x, def.y, def.z) < 1)
+    this.fragInner = Math.max(120, core ? core.radius + (core.heat ? core.radius * 1.4 : 60) : 120)
+  }
+
+  private sampleTime(pos: Vector3) {
+    let tf = 1
+    for (const hole of this.holes) {
+      if (hole.kind !== 'hole') continue
+      tf = Math.min(tf, timeFactorAt(pos.distanceTo(hole.pos), hole.rs, hole.curve))
+    }
+    const uni = UNIVERSES[this.universeId]
+    return { tf, worldScale: Math.min(8, (1 / Math.max(0.08, tf)) * uni.timeMul) }
+  }
+
+  private pullGravity(dt: number) {
+    const uni = UNIVERSES[this.universeId]
+    for (const hole of this.holes) {
+      vA.subVectors(hole.pos, this.pos)
+      const r = Math.max(0.8, vA.length())
+      const gm = hole.kind === 'worm' ? 5000 : hole.gm * uni.gravMul
+      this.vel.addScaledVector(vA, (gm / (r * r) / r) * dt)
+    }
+    for (const planet of this.planets) {
+      vA.subVectors(planet.pos, this.pos)
+      const dist = Math.max(1, vA.length())
+      const alt = dist - planet.def.radius
+      if (alt < planet.def.radius * 2.3) {
+        const falloff = clamp(1 - Math.max(0, alt) / (planet.def.radius * 2.3), 0, 1)
+        const accel = Math.min(6, planet.def.gravity * 0.18) * falloff
+        this.vel.addScaledVector(vA, (accel / dist) * dt)
+      }
+      if (dist < planet.def.radius + 2.5) {
+        vB.copy(this.pos).sub(planet.pos).normalize()
+        this.pos.copy(planet.pos).addScaledVector(vB, planet.def.radius + 2.5)
+        const inward = this.vel.dot(vB)
+        if (inward < 0) this.vel.addScaledVector(vB, -inward)
+      }
+    }
+  }
+
+  private hazards() {
+    for (const hole of this.holes) {
+      const dist = this.pos.distanceTo(hole.pos)
+      if (hole.kind === 'hole' && dist < hole.rs) {
+        this.lose('ufuk')
+        return true
+      }
+      if (hole.kind === 'worm' && dist < 15 && this.transitionLock <= 0 && !this.fading && hole.to) {
+        this.transit(hole.to)
+        return true
+      }
+    }
+    return false
+  }
+
+  private transit(to: UniId) {
+    if (this.fading || this.layer === 'foot') return
+    if (this.mode === 'combat') {
+      this.ending = true
+      this.clearCombat()
+      this.clearShots()
+      this.mode = 'map'
+      this.pos.copy(this.saved.pos)
+      this.vel.copy(this.saved.vel)
+      this.quat.copy(this.saved.quat)
+      this.ending = false
+      this.mapRoot.visible = true
+      this.combatRoot.visible = false
+    }
+    if (this.mode !== 'map') return
+    this.bookmark()
+    const from = this.universeId
+    const uni = UNIVERSES[to]
+    this.fadeTo(() => {
+      this.clearCombat()
+      this.clearFleets()
+      this.clearLoot()
+      this.layoutUniverse(to)
+      const saved = this.returns[to]
+      if (saved) {
+        this.pos.copy(saved.pos)
+        this.vel.copy(saved.vel)
+        this.quat.copy(saved.quat)
+        this.escapeThroats()
+      } else {
+        const worm = this.holes.find((h) => h.kind === 'worm' && h.to === from) ?? this.holes.find((h) => h.kind === 'worm')
+        const anchor = worm ? worm.pos : new Vector3()
+        vA.set(anchor.x > 30 ? -70 : 40, 22, anchor.z > 10 ? -76 : 76)
+        this.pos.copy(anchor).add(vA)
+        vB.copy(vA).normalize()
+        this.vel.copy(vB).multiplyScalar(34)
+        quatFromForward(this.quat, vB)
+      }
+      this.layer = 'ship'
+      this.visual.root.position.copy(this.pos)
+      this.visual.root.quaternion.copy(this.quat)
+      this.transitionLock = 2.8
+      this.snapCamera = true
+      this.toast(this.isHome() ? `${uni.name}. Ev sistemi — kalkanın burada çabuk döner.` : `${uni.name}. ${uni.line}`)
+      if (this.isHome()) this.spawnHomePatrols(this.homePatrols)
+      if (this.foreignHome(to)) this.raiseAmbush()
+      this.mirrorRun()
+    })
+  }
+
+  private lensFocus() {
+    if (this.wellLife > 0) return { pos: this.wellPos, rs: 5.4 }
+    const enemyWell = this.enemyWells.find((well) => well.alive)
+    if (enemyWell) return { pos: enemyWell.pos, rs: 3.8 }
+    if (this.mode === 'combat' || (this.mode === 'pause' && this.pausedFrom === 'combat')) return null
+    let best: Hole | null = null
+    let score = 0
+    for (const hole of this.holes) {
+      if (hole.kind !== 'hole') continue
+      const ang = hole.rs / Math.max(1, this.camera.position.distanceTo(hole.pos))
+      if (ang > score) {
+        score = ang
+        best = hole
+      }
+    }
+    return best ? { pos: best.pos, rs: best.rs } : null
+  }
+
+  private makeWell(ringColor = 0xffe2b0, radius = 4.1) {
+    const group = new Group()
+    const dark = new Mesh(new SphereGeometry(radius, 22, 16), new MeshBasicMaterial({ color: 0x000000 }))
+    const ringMat = new MeshBasicMaterial({
+      color: ringColor,
+      transparent: true,
+      opacity: 0.95,
+      blending: AdditiveBlending,
+      depthWrite: false,
+      side: DoubleSide,
+    })
+    ringMat.toneMapped = false
+    const ring = new Mesh(new TorusGeometry(radius * 1.55, 0.18, 10, 36), ringMat)
+    group.add(dark, ring)
+    group.visible = false
+    return group
+  }
+
+  private updateWell(dt: number) {
+    if (this.wellLife <= 0) this.wellMesh.visible = false
+    else {
+    this.wellLife -= dt
+    this.wellMesh.visible = true
+    this.wellMesh.position.copy(this.wellPos)
+    this.wellMesh.rotation.y += dt
+    this.wellMesh.scale.setScalar(0.9 + Math.sin(this.clockT * 7) * 0.06)
+    {
+      const selfDist = this.pos.distanceTo(this.wellPos)
+      if (selfDist < 4.2) this.hurtPlayer(1.6 * dt, true)
+      for (const enemy of [...this.enemies]) {
+        if (!enemy.alive) continue
+        vA.subVectors(this.wellPos, enemy.pos)
+        const dist = Math.max(0.5, vA.length())
+        enemy.vel.addScaledVector(vA, (64 / dist) * dt)
+        if (dist < 24) this.hurtEnemy(enemy, 14 * dt)
+      }
+    }
+    }
+    for (const well of this.enemyWells) {
+      if (!well.alive) continue
+      well.life -= dt
+      well.mesh.visible = well.life > 0
+      well.mesh.position.copy(well.pos)
+      well.mesh.rotation.y += dt * 1.4
+      if (well.life <= 0) {
+        well.alive = false
+        well.owner = null
+        continue
+      }
+      for (const enemy of [...this.enemies]) {
+        if (!enemy.alive) continue
+        vA.subVectors(well.pos, enemy.pos)
+        const dist = Math.max(0.4, vA.length())
+        const pull = enemy === well.owner ? 90 : 46
+        enemy.vel.addScaledVector(vA, (pull / dist) * dt)
+        if (dist < 16) this.hurtEnemy(enemy, (enemy === well.owner ? 80 : 10) * dt)
+      }
+      const playerDist = this.pos.distanceTo(well.pos)
+      if (playerDist < 14) {
+        vC.subVectors(well.pos, this.pos)
+        this.vel.addScaledVector(vC, (18 / Math.max(0.4, playerDist)) * dt)
+        this.hurtPlayer(6 * dt, true)
+      }
+    }
+  }
+
+  private useAbilities(dt: number) {
+    this.cd1 = Math.max(0, this.cd1 - dt)
+    this.cd2 = Math.max(0, this.cd2 - dt)
+    const a1 = this.input.touchAb1
+    const a2 = this.input.touchAb2
+    if (this.input.pressed('KeyG') || (a1 && !this.ab1Was)) this.tryAbility(1)
+    if (this.input.pressed('KeyH') || (a2 && !this.ab2Was)) this.tryAbility(2)
+    this.ab1Was = a1
+    this.ab2Was = a2
+  }
+
+  private tryAbility(slot: 1 | 2) {
+    const origin = this.origin()
+    const id = (slot === 1 ? origin.ability : origin.ability2) as AbilityId | undefined
+    if (!id) {
+      this.toast('Bu geminin o yuvası boş.')
+      return
+    }
+    const left = slot === 1 ? this.cd1 : this.cd2
+    if (left > 0) {
+      this.toast(`${ABILITY_INFO[id].name} ${Math.ceil(left)} sn`)
+      return
+    }
+    if (id === 'stun') {
+      if (!this.fighting()) {
+        this.toast('Sersemletme yalnız savaşta.')
+        return
+      }
+      let hit = 0
+      for (const enemy of this.enemies) {
+        if (!enemy.alive) continue
+        if (enemy.pos.distanceTo(this.pos) < 56) {
+          enemy.stun = 3.4
+          hit += 1
+        }
+      }
+      this.cd1 = 14
+      this.toast(hit ? 'Sersemletme dalgası.' : 'Menzilde kimse yok.')
+      this.audio.warning()
+      return
+    }
+    if (id === 'well') {
+      shipForward(this.quat, vA)
+      this.wellPos.copy(this.pos).addScaledVector(vA, 32)
+      this.wellLife = 4.6
+      this.wellMesh.visible = true
+      this.wellMesh.position.copy(this.wellPos)
+      this.cd2 = 22
+      this.toast('Mini kara delik açıldı.')
+      this.audio.boom()
+      return
+    }
+    if (id === 'cloak') {
+      this.cloakT = 3.6
+      this.cd1 = 16
+      this.vis = Math.max(0, this.vis - 20)
+      this.toast('Karanlığa gömüldün.')
+      this.audio.ui()
+      return
+    }
+    if (id === 'mend') {
+      this.hull = Math.min(this.hullMax, this.hull + 34)
+      this.cd1 = 16
+      this.toast('Gövde filizlendi.')
+      this.audio.collect()
+    }
+  }
+
+  private paintAbilities() {
+    const origin = this.origin()
+    const paint = (slot: 1 | 2, id: AbilityId | undefined) => {
+      const button = must<HTMLButtonElement>(slot === 1 ? 'ab1' : 'ab2')
+      if (!id || (this.mode !== 'map' && this.mode !== 'combat' && this.mode !== 'pause')) {
+        button.classList.add('hidden')
+        return
+      }
+      button.classList.remove('hidden')
+      if (this.layer === 'foot') {
+        button.classList.add('hidden')
+        return
+      }
+      const info = ABILITY_INFO[id]
+      this.domSet(slot === 1 ? 'ab1-name' : 'ab2-name', info.name)
+      const left = slot === 1 ? this.cd1 : this.cd2
+      this.domSet(slot === 1 ? 'ab1-cd' : 'ab2-cd', left > 0.15 ? `${Math.ceil(left)}` : 'hazır')
+      const touch = document.querySelector<HTMLButtonElement>(`#touch-buttons button[data-act="ab${slot}"]`)
+      const text = left > 0.15 ? `${slot === 1 ? 'G' : 'H'} ${Math.ceil(left)}` : `${slot === 1 ? 'G' : 'H'} · ${info.name}`
+      if (touch && touch.textContent !== text) touch.textContent = text
+    }
+    paint(1, origin.ability)
+    paint(2, origin.ability2)
+  }
+
+  private shotMat(kind: ShotKind, friendly: boolean) {
+    if (kind === 'goo') return this.gooMat
+    if (kind === 'homing') return this.homingMat
+    if (kind === 'laser') return this.laserMat
+    if (kind === 'pellet') return this.pelletMat
+    if (kind === 'rocket') return this.rocketMat
+    if (kind === 'plasma') return this.plasmaMat
+    if (kind === 'chain') return this.chainMat
+    return friendly ? this.laserMat : this.boltMat
+  }
+
+  private weaponNoise() {
+    if (this.weapon === 'laser') return 16
+    if (this.weapon === 'spread') return 42
+    if (this.weapon === 'rocket') return 34
+    if (this.weapon === 'plasma') return 30
+    return 22
+  }
+
+  private firePrimary() {
+    this.muzzleSide *= -1
+    shipForward(this.quat, vA)
+    shipRight(this.quat, vB)
+    shipUp(this.quat, vC)
+    const dx = vA.x
+    const dy = vA.y
+    const dz = vA.z
+    vD.copy(this.pos).addScaledVector(vA, 1.2).addScaledVector(vB, this.muzzleSide * 0.32)
+    const mul =
+      this.weaponMul *
+      (this.originId === 'gliese' && this.weapon === 'plasma' ? 1.35 : 1) *
+      (this.originId === 'kepler452' && this.weapon === 'chain' ? 1.2 : 1) *
+      (this.powerT > 0 ? 1.28 : 1)
+    if (this.weapon === 'spread') {
+      this.fireCd = 0.46
+      for (let i = 0; i < 5; i++) {
+        vE.set(dx, dy, dz).applyAxisAngle(vC, (i - 2) * 0.1)
+        this.spawnShot(true, vD, vE, 5 * mul, 'pellet')
+      }
+    } else if (this.weapon === 'rocket') {
+      this.fireCd = 0.62
+      this.spawnShot(true, vD, vA, 28 * mul, 'rocket')
+    } else if (this.weapon === 'plasma') {
+      this.fireCd = 0.5
+      this.spawnShot(true, vD, vA, 22 * mul, 'plasma')
+    } else if (this.weapon === 'chain') {
+      this.fireCd = 0.55
+      const hops = this.originId === 'kepler452' ? 3 : 2
+      const target = this.fighting() ? this.enemies.find((e) => e.alive && e.pos.distanceTo(this.pos) < 130) : undefined
+      if (target) vE.subVectors(target.pos, vD).normalize()
+      else vE.set(dx, dy, dz)
+      this.spawnShot(true, vD, vE, 16 * mul, 'chain', hops)
+    } else {
+      this.fireCd = 0.11
+      this.spawnShot(true, vD, vA, 9 * mul, 'laser')
+    }
+    this.audio.laser(false)
+    this.muzzleT = 0.045
+    this.visual.muzzle.position.set(this.muzzleSide * 0.32, 0, -2.35)
+  }
+
+  private pollGear() {
+    const controlsOpen = !this.dom.controls.classList.contains('hidden')
+    const landEdge = this.input.pressed('KeyL') || (this.input.touchLand && !this.landWas)
+    const weaponEdge = this.input.pressed('KeyX') || (this.input.touchWeapon && !this.weaponWas)
+    this.landWas = this.input.touchLand
+    this.weaponWas = this.input.touchWeapon
+    if (!controlsOpen && landEdge && this.mode === 'map') this.toggleSurface()
+    if (!controlsOpen && weaponEdge && this.layer === 'ship' && (this.mode === 'map' || this.mode === 'combat')) this.cycleWeapon()
+  }
+
+  private cycleWeapon() {
+    const ids = this.owned.length ? this.owned : starterWeapons(this.originId)
+    const next = ids[(Math.max(0, ids.indexOf(this.weapon)) + 1) % ids.length]
+    this.weapon = next
+    const info = WEAPONS.find((item) => item.id === next)
+    this.toast(info ? `${info.name}. ${info.blurb}` : 'Silah')
+    this.mirrorRun()
+  }
+
+  private ensureBeacon() {
+    if (this.visual.root.getObjectByName('beacon')) return
+    const mat = new SpriteMaterial({
+      map: glowTexture(),
+      color: 0xfff1d6,
+      transparent: true,
+      blending: AdditiveBlending,
+      depthWrite: false,
+      opacity: 0.92,
+    })
+    mat.toneMapped = false
+    const beacon = new Sprite(mat)
+    beacon.name = 'beacon'
+    beacon.scale.set(1.7, 1.7, 1)
+    this.visual.root.add(beacon)
+  }
+
+  private layoutPlanets(uni: { planets: PlanetDef[] }) {
+    this.clearLocals()
+    this.clearGround()
+    for (const c of Object.values(this.colonies)) this.detachColony(c)
+    for (const poi of this.pois) {
+      poi.removeFromParent()
+      this.disposeMats(poi)
+    }
+    this.pois = []
+    for (const village of this.villages) {
+      village.removeFromParent()
+      this.disposeMats(village)
+    }
+    this.villages = []
+    while (this.planetMeshes.length < uni.planets.length) {
+      const mesh = buildPlanet('small')
+      this.mapRoot.add(mesh)
+      this.planetMeshes.push(mesh)
+    }
+    for (const mesh of this.planetMeshes) mesh.visible = false
+    this.planets = uni.planets.map((def, i) => {
+      const mesh = this.planetMeshes[i]
+      mesh.visible = true
+      mesh.position.set(def.x, def.y, def.z)
+      mesh.rotation.set(0, 0, 0)
+      mesh.scale.setScalar(def.radius)
+      paintPlanet(mesh, def.kind, def.color, Boolean(def.rings), Boolean(def.heat))
+      if (def.landable !== false || def.heat || def.radius > 50) {
+        const sphere = mesh.children[0] as Mesh
+        sphere.geometry.dispose()
+        const fine = def.radius > 200 ? 64 : def.radius > 70 ? 40 : 24
+        sphere.geometry = new SphereGeometry(1, fine, Math.round(fine * 0.62))
+      }
+      if (def.landable !== false) this.scatterPois(def, mesh)
+      const village = def.village ? this.buildVillage(def, mesh) : null
+      const flat = Math.hypot(def.x, def.z)
+      return { def, pos: mesh.position, mesh, village, anchor: new Vector3(def.x, def.y, def.z), rate: 0.32 / Math.max(48, flat), spin: this.clockT * this.spinRateOf(def.radius), spinRate: this.spinRateOf(def.radius) }
+    })
+    this.footPlanet = null
+    if (this.layer === 'foot') this.layer = 'ship'
+    this.seedBotColonies()
+    this.attachColonies()
+  }
+
+  private scatterPois(def: PlanetDef, mesh: Group) {
+    const kinds = ['hut', 'plant', 'rock'] as const
+    for (let i = 0; i < 8; i++) {
+      const y = 1 - ((i + 0.5) / 8) * 2
+      const ring = Math.sqrt(Math.max(0, 1 - y * y))
+      const phi = i * Math.PI * (3 - Math.sqrt(5))
+      const up = new Vector3(Math.cos(phi) * ring, y, Math.sin(phi) * ring).normalize()
+      const poi = buildPoi(kinds[i % 3], def.color)
+      const tangent = new Vector3(0, 1, 0).cross(up)
+      if (tangent.lengthSq() < 1e-6) tangent.set(1, 0, 0)
+      tangent.normalize()
+      const bit = new Vector3().crossVectors(tangent, up).normalize()
+      poi.quaternion.setFromRotationMatrix(new Matrix4().makeBasis(tangent, up, bit))
+      const lift = kinds[i % 3] === 'hut' ? 0.2 : 0
+      poi.position.copy(up).multiplyScalar(1 + lift / def.radius)
+      poi.scale.setScalar(Math.max(1, def.radius / 30) / def.radius)
+      mesh.add(poi)
+      this.pois.push(poi)
+    }
+  }
+
+  private clearLocals() {
+    for (const local of this.locals) {
+      this.mapRoot.remove(local.root)
+      this.disposeMats(local.root)
+    }
+    this.locals = []
+  }
+
+  /** Gezegenin inilebilir menzili. Gemi yüzeye `yarıçap + 2,5`'ten yakına giremez; o yüzden alt sınır yok. */
+  private landReach(planet: Planet) {
+    return Math.max(40, planet.def.radius * 0.35)
+  }
+
+  private nearestLandable() {
+    let best: Planet | null = null
+    let bestAlt = Infinity
+    for (const planet of this.planets) {
+      if (planet.def.landable === false || planet.def.heat) continue
+      const alt = this.pos.distanceTo(planet.pos) - planet.def.radius
+      if (alt < this.landReach(planet) && alt < bestAlt) {
+        best = planet
+        bestAlt = alt
+      }
+    }
+    return best
+  }
+
+  /** İniş olmadığında neden olmadığını söyler: yıldız mı, yoksa ne kadar uzak. */
+  private landMiss() {
+    let near: Planet | null = null
+    let nearAlt = Infinity
+    for (const planet of this.planets) {
+      const alt = this.pos.distanceTo(planet.pos) - planet.def.radius
+      if (alt < nearAlt) {
+        near = planet
+        nearAlt = alt
+      }
+    }
+    if (!near) return 'İnecek kadar yakın gezegen yok.'
+    if (near.def.heat || near.def.landable === false) return `${near.def.name} bir yıldız; inilmez.`
+    const left = nearAlt - this.landReach(near)
+    if (left < 2000) return `${near.def.name} yüzeyine ${fmt(Math.ceil(left))} birim daha yaklaş.`
+    return 'İnecek kadar yakın gezegen yok.'
+  }
+
+  /** Açık uzayda gemi daha hızlı seyreder; savaşta ve gövdelerin yakınında eski sınır geçerli. */
+  /** Sistemin kenarı: dışa doğru hız sönümlenir, gemi yavaşça merkeze döner. Eskiden yay gibi geri çekiyordu;
+   * burun dışarı bakarken gemi geri geri uçuyor, oyuncu ileri bastıkça sınırda takılıp kalıyordu. */
+  private edgeReturn(dt: number) {
+    const r = this.pos.length()
+    vA.copy(this.pos).multiplyScalar(-1 / r) // merkeze doğru
+    const outward = -this.vel.dot(vA)
+    if (outward > 0) this.vel.addScaledVector(vA, outward * (1 - Math.exp(-3 * dt)))
+    this.vel.addScaledVector(vA, 24 * dt)
+    quatFromForward(qB, vA)
+    this.quat.slerp(qB, 1 - Math.exp(-1.4 * dt))
+    const hard = this.mapLimit + 400
+    if (r > hard) this.pos.multiplyScalar(hard / r)
+    if (this.edgeToastCd <= 0) {
+      this.edgeToastCd = 8
+      this.toast('Sistemin kenarı. Gemi merkeze dönüyor — kapılar haritada (sağ alt).')
+    }
+  }
+
+  /** Irkın açık uzay seyir hızı (motor geliştirmesiyle biraz artar). */
+  private openCap() {
+    return cruiseSpeed(this.originId) * (1 + 0.05 * (this.up.engine - 1))
+  }
+
+  /** Açık uzayda ırkın seyir hızına çıkılır; savaşta ve gövdelerin yakınında daha düşük sınır geçerli. */
+  private speedCap() {
+    const open = this.openCap()
+    const near = Math.min(CRUISE_CAP, open * 0.85)
+    if (this.fighting() || this.layer !== 'ship') return near
+    let clear = Infinity
+    for (const planet of this.planets) clear = Math.min(clear, this.pos.distanceTo(planet.pos) - planet.def.radius * (planet.def.rings ? 1.7 : 1))
+    for (const hole of this.holes) clear = Math.min(clear, this.pos.distanceTo(hole.pos) - (hole.kind === 'hole' ? hole.rs * 6 : 60))
+    const k = clamp((clear - 260) / 700, 0, 1)
+    return lerp(near, open, k)
+  }
+
+
+  private toggleSurface() {
+    if (this.layer === 'foot') this.board()
+    else this.land()
+  }
+
+  /** İnerken süren savaş askıya alınır: düşman gemileri yere inmez, yörüngede bekler; kalkınca yeniden saldırır. */
+  private stashSkirmish(planet: Planet, up: Vector3) {
+    const left = this.enemies.filter((e) => e.alive)
+    this.clearShots()
+    if (!this.enemies.length) return
+    const small = left.length > 0 && left.every((e) => e.small)
+    const threat = Math.max(0, ...left.map((e) => e.threat))
+    this.clearCombat()
+    this.skirmish = false
+    if (!left.length) return
+    const at = planet.pos.clone().addScaledVector(up, planet.def.radius + 160)
+    const fleet = this.spawnFleet(left.length, threat, at, 'search')
+    fleet.small = small
+    fleet.lastKnown.copy(at)
+    fleet.searchLeft = 45
+    fleet.around = planet
+    fleet.offset = at.clone().sub(planet.pos)
+    fleet.stashed = true
+    if (small) this.homePatrols++
+  }
+
+  /** Filoların kovaladığı nokta: yayayken yüzey değil, oyuncunun üstündeki yörünge. */
+  private fleetAim() {
+    if (this.layer === 'foot' && this.footPlanet) {
+      const center = this.footPlanet.pos
+      return this.fleetAimPos.copy(this.pos).sub(center).setLength(this.footPlanet.def.radius + 160).add(center)
+    }
+    return this.pos
+  }
+
+  private land() {
+    const planet = this.nearestLandable()
+    if (!planet || this.mode !== 'map') {
+      this.toast(this.mode === 'map' ? this.landMiss() : 'İnecek kadar yakın gezegen yok.')
+      return false
+    }
+    vA.copy(this.pos).sub(planet.pos).normalize()
+    vB.crossVectors(WORLD_UP, vA)
+    if (vB.lengthSq() < 1e-4) vB.set(1, 0, 0)
+    vB.normalize()
+    vC.crossVectors(vA, vB).normalize()
+    this.parkedShip.copy(planet.pos).addScaledVector(vA, planet.def.radius + 3.2).addScaledVector(vC, 7)
+    this.parkOffset.copy(this.parkedShip).sub(planet.pos)
+    this.footCenter.copy(planet.pos)
+    this.visual.root.position.copy(this.parkedShip)
+    this.stashSkirmish(planet, vA)
+    quatFromForward(this.quat, vA)
+    this.visual.root.quaternion.copy(this.quat)
+    this.pos.copy(planet.pos).addScaledVector(vA, planet.def.radius + 1.08)
+    this.vel.set(0, 0, 0)
+    this.footAlt = 1.08
+    this.footVel = 0
+    this.footSpeed = 0
+    this.grounded = true
+    this.footForward.copy(vB)
+    this.layer = 'foot'
+    this.footPlanet = planet
+    this.spawnLocals(planet)
+    this.snapCamera = true
+    if (planet.def.home && this.isHome()) {
+      this.hull = this.hullMax
+      this.shield = this.shieldMax
+      this.powerT = 18
+      this.toast(`${planet.def.name}. Evindesin — iyileştin, kısa süre daha sertsin.`)
+    } else if (planet.def.lore) this.toast(planet.def.lore)
+    else this.toast(planet.def.kind === 'small' ? `${planet.def.name}. Hafif — zıplama yükselir, havada süzülürsün.` : `${planet.def.name}. Ağır — adım yavaş, zıplama alçak.`)
+    if (this.colonyHere(planet)) this.onLandColony(planet)
+    else this.clearGround()
+    this.disembark(planet)
+    this.mirrorRun()
+    return true
+  }
+
+  private board() {
+    if (!this.footPlanet || this.mode !== 'map') return false
+    if (this.pos.distanceTo(this.parkedShip) > 18) {
+      this.toast('Gemi uzakta. Yürüyerek dön.')
+      return false
+    }
+    vA.copy(this.parkedShip).sub(this.footPlanet.pos).normalize()
+    const crew = this.units.filter((u) => u.alive && u.squad)
+    this.squad = crew.map((u) => ({ kind: u.kind as SettlerKind, hull: u.hull, hullMax: u.hullMax }))
+    this.onBoardColony()
+    this.clearLocals()
+    this.pos.copy(this.parkedShip).addScaledVector(vA, 8)
+    this.vel.copy(vA).multiplyScalar(12)
+    quatFromForward(this.quat, vA)
+    this.visual.root.position.copy(this.pos)
+    this.visual.root.quaternion.copy(this.quat)
+    this.layer = 'ship'
+    // Yörüngede bekleyen filo kalkışını görür ve yeniden saldırır.
+    for (const fleet of this.fleets) {
+      if (!fleet.stashed) continue
+      fleet.stashed = false
+      fleet.around = undefined
+      fleet.state = 'hunt'
+      fleet.lastKnown.copy(this.pos)
+    }
+    this.footPlanet = null
+    this.walker.visible = false
+    this.snapCamera = true
+    this.buildEscorts()
+    this.toast(this.squad.length ? `Kalktın. Ekibin (${this.squad.length}) eşlik gemilerinde.` : 'Kalktın.')
+    this.mirrorRun()
+    return true
+  }
+
+  private spawnLocals(planet: Planet) {
+    this.clearLocals()
+    // Yerliler yok edildiyse ya da gezegende bir üs varsa yeniden doğmaz.
+    if (this.cleared.has(planet.def.id) || this.colonyHere(planet)) return
+    vA.copy(this.pos).sub(planet.pos).normalize()
+    const look = nativeLook(planet.def)
+    const friendly = look.id === originLook(this.originId).id
+    for (let i = 0; i < 4; i++) {
+      const rig = buildCreature(look)
+      rig.root.scale.multiplyScalar(0.94 + (i % 3) * 0.06)
+      const axis = new Vector3(1, 0, 0).cross(vA)
+      if (axis.lengthSq() < 1e-4) axis.set(0, 0, 1)
+      axis.normalize()
+      // Uzaklık yay boyu (birim) olarak verilir; gezegen büyüse de yerliler yakında doğar.
+      const home = vA.clone().applyAxisAngle(axis, (14 + i * 7) / planet.def.radius).applyAxisAngle(vA, i * 1.3).normalize()
+      rig.root.position.copy(planet.pos).addScaledVector(home, planet.def.radius + 1.05)
+      this.mapRoot.add(rig.root)
+      this.locals.push({ alive: true, root: rig.root, rig, home, axis, phase: i * 0.7, hull: 16, cool: 0.8, attack: 0, friendly })
+    }
+  }
+
+  private updateFoot(dt: number) {
+    const planet = this.footPlanet
+    if (!planet) {
+      this.layer = 'ship'
+      return
+    }
+    // Gezegen yörüngede ilerler; yürüyen karakter ve park edilen gemi onunla birlikte gider.
+    this.pos.add(vA.copy(planet.pos).sub(this.footCenter))
+    this.footCenter.copy(planet.pos)
+    this.parkedShip.copy(planet.pos).add(this.parkOffset)
+    this.visual.root.position.copy(this.parkedShip)
+    const trait = footTrait(this.originId)
+    const center = planet.pos
+    const radius = planet.def.radius
+    vA.copy(this.pos).sub(center)
+    if (vA.lengthSq() < 1) vA.set(0, 1, 0)
+    vA.normalize()
+    this.footForward.addScaledVector(vA, -this.footForward.dot(vA))
+    if (this.footForward.lengthSq() < 1e-6) this.footForward.set(1, 0, 0)
+    this.footForward.normalize()
+    const yaw = -this.input.mouseX * 0.0022 * this.save.settings.sens
+    if (yaw) this.footForward.applyAxisAngle(vA, yaw)
+    vB.crossVectors(vA, this.footForward).normalize()
+    const axes = this.axes()
+    const wish = Math.min(1, Math.hypot(axes.f, axes.s))
+    const cap = 9.5 * planet.def.move * trait.speed
+    const rate = planet.def.kind === 'large' ? 2.2 : 9
+    this.footSpeed += ((wish > 0.08 ? cap : 0) - this.footSpeed) * (1 - Math.exp(-rate * dt))
+    if (wish > 0.08 && this.footSpeed > 0.12) {
+      vC.copy(this.footForward).multiplyScalar(axes.f).addScaledVector(vB, axes.s)
+      if (vC.lengthSq() > 1e-6) {
+        vC.normalize()
+        vD.crossVectors(vA, vC).normalize()
+        const angle = (this.footSpeed * dt) / radius
+        vE.copy(this.pos).sub(center).applyAxisAngle(vD, angle)
+        this.footForward.applyAxisAngle(vD, angle).addScaledVector(vA, 0)
+        this.pos.copy(center).add(vE)
+      }
+    }
+    const jumpEdge = this.input.pressed('Space') || (this.input.touchJump && !this.jumpWas)
+    this.jumpWas = this.input.touchJump
+    if (this.jumpBuf > 0) {
+      this.footVel = this.jumpBuf
+      this.jumpBuf = 0
+      this.grounded = false
+    } else if (this.grounded && jumpEdge) {
+      this.footVel = planet.def.jump * trait.jump
+      this.grounded = false
+    }
+    if (!this.grounded) this.footVel -= planet.def.gravity * (this.footAlt > 1.22 ? planet.def.glide : 1) * dt
+    this.footAlt += this.footVel * dt
+    if (this.footAlt <= 1.08) {
+      this.footAlt = 1.08
+      this.footVel = 0
+      this.grounded = true
+    } else this.grounded = false
+    vA.copy(this.pos).sub(center)
+    if (vA.lengthSq() < 1e-6) vA.set(0, 1, 0)
+    vA.normalize()
+    this.pos.copy(center).addScaledVector(vA, radius + this.footAlt)
+    this.poseWalker()
+    this.updateLocals(dt)
+    this.tryPunch()
+    this.updateGround(dt)
+    this.punchCd = Math.max(0, this.punchCd - dt)
+    this.powerT = Math.max(0, this.powerT - dt)
+    if (this.hitCd <= 0) this.shield = Math.min(this.shieldMax, this.shield + this.regenRate() * dt)
+    if (this.isHome()) this.hull = Math.min(this.hullMax, this.hull + 1.3 * dt)
+    if (trait.regen > 0) this.hull = Math.min(this.hullMax, this.hull + trait.regen * dt)
+  }
+
+  private poseWalker() {
+    const planet = this.footPlanet
+    if (!planet) return
+    vA.copy(this.pos).sub(planet.pos).normalize()
+    this.footForward.addScaledVector(vA, -this.footForward.dot(vA))
+    if (this.footForward.lengthSq() < 1e-6) this.footForward.set(1, 0, 0)
+    this.footForward.normalize()
+    vB.crossVectors(vA, this.footForward).normalize()
+    basis.makeBasis(vB, vA, this.footForward)
+    this.quat.setFromRotationMatrix(basis)
+    this.walker.position.copy(this.pos)
+    this.walker.quaternion.copy(this.quat)
+    this.walker.visible = true
+    this.punchT = Math.max(0, this.punchT - 0.016)
+    const jumping = !this.grounded
+    this.stepRig(this.walkerRig, jumping ? 0 : this.footSpeed, jumping, this.punchT)
+  }
+
+  private footCamera(dt: number) {
+    vA.copy(this.pos).sub(this.footPlanet ? this.footPlanet.pos : this.pos).normalize()
+    vB.copy(this.footForward)
+    // Dikey telefonda karakter ekranı kaplamasın: kamera biraz daha geride ve yukarıda.
+    const narrow = this.camera.aspect < 1
+    const back = narrow ? 7.8 : 5.4
+    const lift = narrow ? 3.1 : 2.4
+    vC.copy(this.pos).addScaledVector(vA, lift).addScaledVector(vB, -back)
+    const k = this.snapCamera ? 1 : 1 - Math.exp(-8 * dt)
+    this.camera.position.lerp(vC, k)
+    vD.subVectors(this.camera.position, this.pos)
+    if (vD.dot(vB) > -1.2) this.camera.position.copy(this.pos).addScaledVector(vB, -back).addScaledVector(vA, lift)
+    this.camera.up.copy(vA) // yüzeyde yukarı = gezegenin normali; gezegenin yanında kamera yan yatmaz
+    this.camera.lookAt(vE.copy(this.pos).addScaledVector(vA, 1.15).addScaledVector(vB, 0.4))
+    this.snapCamera = false
+    const target = 64
+    this.camera.fov += (target - this.camera.fov) * (1 - Math.exp(-6 * dt))
+    this.camera.updateProjectionMatrix()
+  }
+
+  private updateLocals(dt: number) {
+    const planet = this.footPlanet
+    if (!planet) return
+    vA.copy(this.pos).sub(planet.pos).normalize()
+    for (const local of this.locals) {
+      if (!local.alive) continue
+      local.phase += dt
+      local.cool = Math.max(0, local.cool - dt)
+      const gap = Math.acos(clamp(local.home.dot(vA), -1, 1)) * planet.def.radius
+      if (gap < 9 && gap > 2.5) local.home.lerp(vA, 1 - Math.exp(-1.5 * dt)).normalize()
+      const peaceful = Boolean(planet.def.home && this.isHome()) || local.friendly
+      if (!peaceful && gap < 3.1 && local.cool <= 0) {
+        local.cool = 1.25
+        local.attack = 0.35
+        this.footHurt(this.isHome() ? 3 : 6)
+      } else if (!peaceful && local.cool <= 0) {
+        // Yerliler baskın ekibine de karşılık verir.
+        for (const u of this.units) {
+          if (!u.alive || !u.squad || this.arc(u.dir, local.home, planet.def.radius) > 3.1) continue
+          local.cool = 1.4
+          local.attack = 0.35
+          this.hitUnit(u, 4, local.home, planet, false)
+          break
+        }
+      }
+      // Yerinde sallanma birim cinsinden: büyük gezegende yerli metrelerce kaymaz, yumruk ıskalamaz.
+      vC.copy(local.home).applyAxisAngle(local.axis, (Math.sin(local.phase) * (local.rig.style === 'waddle' ? 1.2 : 0.5)) / planet.def.radius).normalize()
+      local.root.position.copy(planet.pos).addScaledVector(vC, planet.def.radius + 1.05)
+      const toward = vD.copy(vA).addScaledVector(vC, -vA.dot(vC))
+      if (toward.lengthSq() > 1e-6) {
+        toward.normalize()
+        const right = vE.crossVectors(vC, toward)
+        if (right.lengthSq() > 1e-6) {
+          right.normalize()
+          basis.makeBasis(right, vC, toward)
+          local.root.quaternion.setFromRotationMatrix(basis)
+        }
+      }
+      const biting = !peaceful && gap < 3.4
+      if (biting) local.attack = 0.35
+      local.attack = Math.max(0, local.attack - dt)
+      const pace = local.rig.style === 'hop' ? 2.2 : local.rig.style === 'waddle' ? 1.1 : 1.6
+      this.stepRig(local.rig, gap < 9 ? pace : 0.4, false, local.attack)
+    }
+  }
+
+  private tryPunch() {
+    const planet = this.footPlanet
+    const click = this.input.mouseDown && !this.clickWas
+    this.clickWas = this.input.mouseDown
+    if (click && planet && this.nearParkedShip() && this.canUpgrade() && !this.hostileNear(4.5)) {
+      this.openUpgrades()
+      return
+    }
+    const want = this.input.pressed('KeyF') || this.input.mouseDown || this.input.touchPunch
+    if (!want || this.punchCd > 0 || !planet) return
+    this.punchCd = 0.4
+    this.punchT = 0.36
+    const trait = footTrait(this.originId)
+    const dmg = Math.round(12 * trait.punch * (this.powerT > 0 ? 1.5 : 1))
+    const reach = 3.6 * trait.reach
+    vJ.copy(this.pos).sub(planet.pos).normalize()
+    let landed = false
+    for (const local of this.locals) {
+      if (!local.alive || local.friendly) continue
+      vK.subVectors(local.root.position, this.pos)
+      const dist = vK.length()
+      if (dist > reach || dist < 0.001) continue
+      if (this.footForward.dot(vK.multiplyScalar(1 / dist)) < 0.15) continue
+      landed = true
+      this.hitLocal(local, dmg, planet)
+    }
+    for (const u of this.units.slice()) {
+      if (!u.alive || !this.hostileToPlayer(u.faction)) continue
+      vK.subVectors(u.root.position, this.pos)
+      const dist = vK.length()
+      if (dist > reach + u.spec.radius || dist < 0.001) continue
+      if (this.footForward.dot(vK.multiplyScalar(1 / dist)) < 0.1) continue
+      landed = true
+      this.hitUnit(u, dmg, vJ, planet, true)
+    }
+    // Düşman üssünün taretleri ve çekirdeği de yumrukla yıkılır.
+    const c = this.colonyHere(planet)
+    if (c && !this.mine(c)) {
+      for (const t of c.turrets.slice()) {
+        if (!t.alive) continue
+        this.surfacePos(this.worldDir(t.dir, planet, vL), planet, 1, vK)
+        vK.sub(this.pos)
+        const dist = vK.length()
+        if (dist > reach + TURRET_RADIUS || dist < 0.001) continue
+        if (this.footForward.dot(vK.multiplyScalar(1 / dist)) < 0.1) continue
+        landed = true
+        t.hull -= dmg
+        this.surfacePos(vL, planet, 1.6, vM)
+        this.impact(vM, dmg, null, 0xffb15a, vL)
+        if (t.hull <= 0) this.destroyTurret(c, t, planet)
+      }
+      this.surfacePos(this.worldDir(c.dir, planet, vL), planet, 1, vK)
+      vK.sub(this.pos)
+      const dist = vK.length()
+      if (dist < reach + CORE_RADIUS && dist > 0.001 && this.footForward.dot(vK.multiplyScalar(1 / dist)) > 0.1) {
+        landed = true
+        c.hull -= dmg
+        this.surfacePos(vL, planet, 2.4, vM)
+        this.impact(vM, dmg, null, 0xffe2b0, vL)
+        if (c.hull <= 0) {
+          this.baseLost(c, planet, null)
+          this.swing.play(true)
+          return
+        }
+      }
+    }
+    this.swing.play(landed)
+    this.audio.laser(false)
+  }
+
+  private bookmark() {
+    let slot = this.returns[this.universeId]
+    if (!slot) {
+      slot = { pos: new Vector3(), vel: new Vector3(), quat: new Quaternion() }
+      this.returns[this.universeId] = slot
+    }
+    slot.pos.copy(this.pos)
+    slot.vel.copy(this.vel)
+    slot.quat.copy(this.quat)
+    for (const hole of this.holes) {
+      if (hole.kind !== 'worm') continue
+      if (slot.pos.distanceTo(hole.pos) < 42) {
+        vA.copy(slot.pos).sub(hole.pos)
+        if (vA.lengthSq() < 1) vA.set(0, 26, 52)
+        vA.setLength(54)
+        slot.pos.copy(hole.pos).add(vA)
+      }
+    }
+    this.mirrorRun()
+  }
+
+  private escapeThroats() {
+    for (const hole of this.holes) {
+      if (hole.kind !== 'worm') continue
+      if (this.pos.distanceTo(hole.pos) < 36) {
+        vA.copy(this.pos).sub(hole.pos)
+        if (vA.lengthSq() < 1) vA.set(0, 20, 48)
+        vA.setLength(48)
+        this.pos.copy(hole.pos).add(vA)
+      }
+    }
+  }
+
+  private mirrorRun() {
+    const returns: Record<string, { pos: number[]; vel: number[]; quat: number[] }> = {}
+    for (const id of Object.keys(this.returns) as UniId[]) {
+      const slot = this.returns[id]
+      if (!slot) continue
+      returns[id] = {
+        pos: [slot.pos.x, slot.pos.y, slot.pos.z],
+        vel: [slot.vel.x, slot.vel.y, slot.vel.z],
+        quat: [slot.quat.x, slot.quat.y, slot.quat.z, slot.quat.w],
+      }
+    }
+    writeRun({
+      origin: this.originId,
+      weapon: this.weapon,
+      hull: this.hull,
+      shield: this.shield,
+      cd1: this.cd1,
+      cd2: this.cd2,
+      universe: this.universeId,
+      returns,
+    })
+  }
+
+  private openEnemyGate(e: Enemy) {
+    const slot = this.enemyGates.find((gate) => !gate.alive)
+    if (!slot) return
+    const order: UniId[] = ['avlu', 'kizil', 'soluk', 'marskol', 'proxima', 'alpha', 'trappist', 'k218', 'kepler186', 'gliese', 'kepler452', 'gunes']
+    const next = order[(order.indexOf(this.universeId) + 1) % order.length]
+    vA.crossVectors(WORLD_UP, vB.subVectors(this.pos, e.pos).normalize())
+    if (vA.lengthSq() < 1e-4) vA.set(1, 0, 0)
+    vA.normalize()
+    slot.owner = e
+    slot.to = next
+    slot.pos.copy(e.pos).addScaledVector(vA, 14)
+    slot.life = 7
+    slot.alive = true
+    slot.brought = false
+    slot.mesh.visible = true
+    slot.mesh.position.copy(slot.pos)
+    const label = slot.mesh.getObjectByName('label')
+    if (label) paintLabel(label as Sprite, `→ ${UNIVERSES[slot.to].name}`)
+    if (Math.random() < 0.55) this.bringThrough(slot)
+    this.audio.warning()
+  }
+
+  private bringThrough(gate: Gate) {
+    if (gate.brought) return
+    gate.brought = true
+    if (this.enemies.filter((e) => e.alive).length >= 8) return
+    this.spawnMinion(gate.pos)
+  }
+
+  private spawnMinion(at: Vector3) {
+    const visual = buildCuteAlien(1, 0.9)
+    const e: Enemy = {
+      root: visual.root,
+      pos: at.clone().add(new Vector3(5, 1.5, 3)),
+      vel: new Vector3(),
+      quat: new Quaternion(),
+      hullMax: 28,
+      hull: 28,
+      shieldMax: 8,
+      shield: 8,
+      cool: 1.2,
+      strafe: 1,
+      strafeT: 1,
+      alive: true,
+      threat: 1,
+      stun: 0,
+      flashT: 0,
+      human: false,
+      attack: 'bolt',
+      giant: false,
+      scale: 0.9,
+      weak: null,
+      bar: null,
+      bodyFlash: () => {
+        visual.bodyMat.emissiveIntensity = 1.6
+      },
+    }
+    e.root.position.copy(e.pos)
+    this.combatRoot.add(e.root)
+    this.enemies.push(e)
+  }
+
+  private updateGates(dt: number) {
+    for (const gate of this.enemyGates) {
+      if (!gate.alive) continue
+      gate.life -= dt
+      gate.mesh.visible = gate.life > 0
+      gate.mesh.position.copy(gate.pos)
+      gate.mesh.rotation.y += dt * 0.8
+      if (gate.life <= 0) {
+        gate.alive = false
+        gate.owner = null
+        continue
+      }
+      const owner = gate.owner
+      if (owner?.alive && owner.pos.distanceTo(gate.pos) < 11) {
+        this.bringThrough(gate)
+        owner.alive = false
+        owner.root.visible = false
+        gate.owner = null
+        if (this.skirmish && this.enemies.every((e) => !e.alive)) this.winCombat()
+      }
+      if (this.pos.distanceTo(gate.pos) < 6.5 && this.transitionLock <= 0 && !this.fading) {
+        this.transit(gate.to)
+        return
+      }
+    }
+  }
+
+  /* ---------- Üs savunması, koloniler, türler ve yüzey dövüşü ---------- */
+
+  private colonyHere(planet: Planet | null = this.footPlanet) {
+    return planet ? (this.colonies[planet.def.id] ?? null) : null
+  }
+
+  private arc(a: Vector3, b: Vector3, radius: number) {
+    return Math.acos(clamp(a.dot(b), -1, 1)) * radius
+  }
+
+  /** `dir` birim yönünü `from` yönünden uzağa, büyük daire boyunca `dist` kadar kaydırır. */
+  private slideAway(dir: Vector3, from: Vector3, dist: number, radius: number) {
+    vH.copy(dir).multiplyScalar(dir.dot(from)).sub(from)
+    if (vH.lengthSq() < 1e-8) {
+      vH.crossVectors(dir, AXIS_X)
+      if (vH.lengthSq() < 1e-6) vH.crossVectors(dir, AXIS_Y)
+    }
+    vH.normalize()
+    const phi = dist / radius
+    dir.multiplyScalar(Math.cos(phi)).addScaledVector(vH, Math.sin(phi)).normalize()
+  }
+
+  /** `dir`'i `target` yönüne doğru büyük daire boyunca `dist` kadar ilerletir (aşmaz). */
+  private slideToward(dir: Vector3, target: Vector3, dist: number, radius: number) {
+    vH.copy(target).addScaledVector(dir, -dir.dot(target))
+    if (vH.lengthSq() < 1e-10) return
+    vH.normalize()
+    const phi = Math.min(dist / radius, Math.acos(clamp(dir.dot(target), -1, 1)))
+    dir.multiplyScalar(Math.cos(phi)).addScaledVector(vH, Math.sin(phi)).normalize()
+  }
+
+  private worldDir(local: Vector3, planet: Planet, out: Vector3) {
+    return out.copy(local).applyQuaternion(planet.mesh.quaternion).normalize()
+  }
+
+  private surfacePos(dir: Vector3, planet: Planet, lift: number, out: Vector3) {
+    return out.copy(planet.pos).addScaledVector(dir, planet.def.radius + lift)
+  }
+
+  private stand(obj: Group, dir: Vector3, radius: number, lift = 0) {
+    obj.position.copy(dir).multiplyScalar(radius + lift)
+    vH.copy(AXIS_Y).cross(dir)
+    if (vH.lengthSq() < 1e-6) vH.set(1, 0, 0)
+    vH.normalize()
+    vI.crossVectors(vH, dir).normalize()
+    obj.quaternion.setFromRotationMatrix(basis.makeBasis(vH, dir, vI))
+  }
+
+  private detachColony(c: Colony) {
+    if (c.root) {
+      c.root.removeFromParent()
+      this.disposeMats(c.root)
+    }
+    c.root = null
+    c.core = null
+    for (const t of c.turrets) {
+      t.root = new Group()
+      t.head = new Group()
+    }
+  }
+
+  private clearColonies() {
+    for (const c of Object.values(this.colonies)) this.detachColony(c)
+    this.colonies = {}
+    this.incomeAcc = 0
+  }
+
+  private buildTurretMesh() {
+    const root = new Group()
+    const steel = new MeshStandardMaterial({ color: 0x7c8494, roughness: 0.5, metalness: 0.5, emissive: 0x1c2028, emissiveIntensity: 0.4 })
+    const trim = new MeshStandardMaterial({ color: 0xe4a15c, roughness: 0.4, metalness: 0.3, emissive: 0xe4a15c, emissiveIntensity: 0.5 })
+    const foot = new Mesh(new CylinderGeometry(1.0, 1.2, 0.5, 12), steel)
+    foot.position.y = 0.25
+    const post = new Mesh(new CylinderGeometry(0.34, 0.5, 1.0, 8), steel)
+    post.position.y = 0.95
+    const head = new Group()
+    head.position.y = 1.65
+    const box = new Mesh(new BoxGeometry(0.95, 0.5, 0.95), steel)
+    const barrel = new Mesh(new BoxGeometry(0.2, 0.2, 1.5), trim)
+    barrel.position.z = 0.95
+    head.add(box, barrel)
+    root.add(foot, post, head)
+    return { root, head }
+  }
+
+  private attachColony(c: Colony, planet: Planet) {
+    this.detachColony(c)
+    const R = planet.def.radius
+    const root = new Group()
+    root.scale.setScalar(1 / R)
+    planet.mesh.add(root)
+    c.root = root
+    const core = this.buildCoreMesh(c)
+    this.stand(core, c.dir, R)
+    root.add(core)
+    c.core = core
+    for (const t of c.turrets) {
+      const m = this.buildTurretMesh()
+      t.root = m.root
+      t.head = m.head
+      this.stand(t.root, t.dir, R)
+      root.add(t.root)
+    }
+  }
+
+  private attachColonies() {
+    for (const c of Object.values(this.colonies)) {
+      if (c.universe !== this.universeId) continue
+      const planet = this.planets.find((p) => p.def.id === c.planetId)
+      if (planet) this.attachColony(c, planet)
+    }
+  }
+
+  private addTurret(c: Colony, planet: Planet, localDir: Vector3) {
+    const m = this.buildTurretMesh()
+    const t: Turret = { dir: localDir.clone().normalize(), root: m.root, head: m.head, cool: 0.6, hull: TURRET_HULL, alive: true }
+    this.stand(t.root, t.dir, planet.def.radius)
+    c.root?.add(t.root)
+    c.turrets.push(t)
+    return t
+  }
+
+  private toLocal(worldDir: Vector3, planet: Planet, out: Vector3) {
+    return out.copy(worldDir).applyQuaternion(qB.copy(planet.mesh.quaternion).invert()).normalize()
+  }
+
+  private coreDistance(c: Colony, planet: Planet) {
+    this.worldDir(c.dir, planet, vJ)
+    vK.copy(this.pos).sub(planet.pos).normalize()
+    return this.arc(vJ, vK, planet.def.radius)
+  }
+
+  private impact(at: Vector3, dmg: number, rig: Rig | null, hex: number, up: Vector3) {
+    vL.copy(at).addScaledVector(up, 2.1)
+    this.floatDamage(vL, dmg, 'hit', up)
+    vM.copy(at).addScaledVector(up, 1.0)
+    this.sparks.burst(vM, hex, 9, 8, 0.95, up)
+    if (rig) this.flash.flash(rig.root, 0xffffff, 0.14)
+    this.hitMark = 0.18
+    this.trauma = Math.min(0.5, this.trauma + 0.06)
+    this.audio.hit(false)
+  }
+
+  private footHurt(dmg: number) {
+    const planet = this.footPlanet
+    this.hitCd = Math.max(this.hitCd, 1)
+    this.hurtPlayer(dmg, true)
+    this.hurtV = Math.max(this.hurtV, 0.55)
+    this.trauma = Math.min(0.85, this.trauma + 0.25)
+    if (planet) {
+      vL.copy(this.pos).sub(planet.pos).normalize()
+      vM.copy(this.pos).addScaledVector(vL, 2.3)
+      this.floatDamage(vM, dmg, 'hurt', vL)
+      vM.copy(this.pos).addScaledVector(vL, 1)
+      this.sparks.burst(vM, 0xff6a4a, 8, 6, 0.9, vL)
+    }
+    this.flash.flash(this.walker, 0xff3a2a, 0.2)
+    this.audio.hit(this.shield > 0)
+  }
+
+  private destroyTurret(c: Colony, t: Turret, planet: Planet) {
+    t.alive = false
+    this.surfacePos(this.worldDir(t.dir, planet, vJ), planet, 1.2, vM)
+    this.sparks.burst(vM, 0xffa060, 16, 10, 1.3, vJ)
+    this.spawnBoom(vM, 0.6, 0xffa060)
+    t.root.removeFromParent()
+    this.disposeMats(t.root)
+    c.turrets = c.turrets.filter((x) => x !== t)
+    this.audio.boom()
+  }
+
+  private paintCoreBar(c: Colony | null) {
+    if (!c?.core) return
+    const crystal = c.core.userData.crystal as Mesh | undefined
+    if (crystal) crystal.rotation.y += 0.02
+    const bar = c.core.userData.bar as ReturnType<typeof buildBar> | undefined
+    const last = c.core.userData.last as number
+    const now = Math.round((c.hull / c.hullMax) * 100)
+    if (bar && now !== last) {
+      c.core.userData.last = now
+      paintBar(bar.ctx, bar.tex, c.hull / c.hullMax, -1)
+    }
+  }
+
+  private mine(c: Colony) {
+    return c.owner === this.originId
+  }
+
+  private colonyCount() {
+    return Object.values(this.colonies).filter((c) => this.mine(c) && c.founded).length
+  }
+
+  private colonyBonus() {
+    return Math.min(0.6, this.colonyCount() * 0.1)
+  }
+
+  private hostileToPlayer(faction: string) {
+    return faction !== this.originId
+  }
+
+  private offsetDir(base: Vector3, bearing: number, dist: number, radius: number, out: Vector3) {
+    vH.crossVectors(base, AXIS_Y)
+    if (vH.lengthSq() < 1e-6) vH.crossVectors(base, AXIS_X)
+    vH.normalize()
+    vI.crossVectors(base, vH).normalize()
+    const phi = dist / radius
+    return out
+      .copy(base)
+      .multiplyScalar(Math.cos(phi))
+      .addScaledVector(vH, Math.sin(phi) * Math.cos(bearing))
+      .addScaledVector(vI, Math.sin(phi) * Math.sin(bearing))
+      .normalize()
+  }
+
+  private clearGround() {
+    for (const u of this.units) {
+      this.flash.forget(u.root)
+      this.mapRoot.remove(u.root)
+      this.disposeMats(u.root)
+    }
+    this.units = []
+    this.flash.clear()
+    this.sparks?.clear()
+    this.tracers?.clear()
+  }
+
+  private buildCoreMesh(c: Colony) {
+    const g = new Group()
+    const tint = c.kind === 'main' ? 0xe4a15c : originLook(c.owner).body ?? 0x6fe0d0
+    const steel = new MeshStandardMaterial({ color: 0x8a8f9c, roughness: 0.5, metalness: 0.45, emissive: 0x20242c, emissiveIntensity: 0.4 })
+    const base = new Mesh(new CylinderGeometry(3.1, 3.6, 0.9, 20), steel)
+    base.position.y = 0.45
+    const dome = new Mesh(
+      new SphereGeometry(2.5, 20, 10, 0, Math.PI * 2, 0, Math.PI / 2),
+      new MeshStandardMaterial({ color: tint, roughness: 0.2, metalness: 0.1, transparent: true, opacity: 0.42, emissive: tint, emissiveIntensity: 0.45 }),
+    )
+    dome.position.y = 0.9
+    const crystalMat = new MeshBasicMaterial({ color: tint })
+    crystalMat.color.multiplyScalar(1.8)
+    crystalMat.toneMapped = false
+    const crystal = new Mesh(new OctahedronGeometry(0.95), crystalMat)
+    crystal.position.y = 2.2
+    const ring = new Mesh(new TorusGeometry(2.9, 0.12, 6, 28), new MeshBasicMaterial({ color: tint, transparent: true, opacity: 0.7 }))
+    ring.rotation.x = Math.PI / 2
+    ring.position.y = 0.95
+    const pillarMat = new MeshBasicMaterial({ color: tint, transparent: true, opacity: 0.3, blending: AdditiveBlending, depthWrite: false })
+    pillarMat.toneMapped = false
+    const pillar = new Mesh(new CylinderGeometry(0.35, 0.35, 70, 8, 1, true), pillarMat)
+    pillar.position.y = 36
+    const bar = buildBar()
+    // Sabit ekran boyutu: uzaktan da görünür, yakından HUD'u örtmez.
+    ;(bar.sprite.material as SpriteMaterial).sizeAttenuation = false
+    bar.sprite.scale.set(0.11, 0.024, 1)
+    bar.sprite.position.y = 5.2
+    paintBar(bar.ctx, bar.tex, c.hull / c.hullMax, -1)
+    g.add(base, dome, crystal, ring, pillar, bar.sprite)
+    g.userData.crystal = crystal
+    g.userData.bar = bar
+    g.userData.last = -1
+    return g
+  }
+
+  private newColony(planet: { def: PlanetDef }, owner: OriginId, main: boolean, level: number, dir: Vector3, uid: UniId = this.universeId): Colony {
+    const hullMax = coreHullMax(level)
+    return {
+      planetId: planet.def.id,
+      planetName: planet.def.name,
+      universe: uid,
+      owner,
+      pop: 1,
+      settleT: 0,
+      attacker: null,
+      kind: main ? 'main' : 'colony',
+      dir,
+      level,
+      hull: hullMax,
+      hullMax,
+      wave: 0,
+      state: 'idle',
+      countdown: FIRST_WAVE_DELAY,
+      founded: main,
+      early: false,
+      queue: [],
+      spawnT: 0,
+      turrets: [],
+      root: null,
+      core: null,
+      coreBar: null,
+    }
+  }
+
+  private foundBase() {
+    const planet = this.footPlanet
+    if (!planet || this.mode !== 'map') return false
+    const existing = this.colonyHere(planet)
+    if (existing) {
+      if (!this.mine(existing)) this.toast(`Bu gezegen ${factionName(existing.owner)} üssü. Çekirdeğine vurup yık (F).`)
+      return false
+    }
+    if (planet.def.landable === false || planet.def.heat) return false
+    const main = Boolean(planet.def.home && this.isHome())
+    const cost = main ? BASE_COST_HOME : OUTPOST_COST
+    if (this.energy < cost) {
+      this.toast(`${main ? 'Üs' : 'Karakol'} için ${cost} enerji gerek. Elinde ${fmt(this.energy)} var.`)
+      return false
+    }
+    const R = planet.def.radius
+    vJ.copy(this.pos).sub(planet.pos).normalize()
+    vK.copy(vJ)
+    vL.copy(vJ).addScaledVector(this.footForward, 0.6).normalize()
+    this.slideToward(vK, vL, 6.5, R)
+    const local = this.toLocal(vK, planet, new Vector3())
+    this.energy -= cost
+    const colony = this.newColony(planet, this.originId, main, 1, local)
+    this.colonies[planet.def.id] = colony
+    this.attachColony(colony, planet)
+    const joined = this.joinSquad(colony)
+    vL.copy(vK)
+    vM.copy(vK).addScaledVector(this.footForward, 0.6).normalize()
+    this.slideToward(vL, vM, 6.5, R)
+    this.addTurret(colony, planet, this.toLocal(vL, planet, new Vector3()))
+    this.surfacePos(vK, planet, 2, vL)
+    this.sparks.burst(vL, 0xffe2b0, 22, 10, 1.4, vK)
+    this.audio.collect()
+    this.toast(
+      main
+        ? `Üs kuruldu. ${FIRST_WAVE_DELAY} sn sonra ilk dalga. Seviye yükseldikçe ${originLook(this.originId).name} yerleşimciler çoğalır.`
+        : joined
+          ? `${planet.def.name}: karakol kuruldu, ekibin (${joined}) buraya yerleşti. ${SIEGE_WAVES} dalgayı tutarsan koloni olur.`
+          : `${planet.def.name}: karakol kuruldu. ${SIEGE_WAVES} dalgayı tutarsan koloni olur. Türün burada çoğalacak. T ile taret ekle.`,
+    )
+    this.mirrorRun()
+    return true
+  }
+
+  private baseAction() {
+    const planet = this.footPlanet
+    if (!planet) return
+    const c = this.colonyHere(planet)
+    if (!c) {
+      this.foundBase()
+      return
+    }
+    if (!this.mine(c)) {
+      this.toast(`${factionName(c.owner)} üssü. Çekirdeğine vurup yıkmadan senin olmaz.`)
+      return
+    }
+    if (this.coreDistance(c, planet) > CORE_REACH) {
+      this.toast('Çekirdeğe yaklaş.')
+      return
+    }
+    if (c.hull < c.hullMax * 0.999) {
+      if (this.energy < REPAIR_COST) {
+        this.toast(`Onarım ${REPAIR_COST} enerji.`)
+        return
+      }
+      this.energy -= REPAIR_COST
+      c.hull = Math.min(c.hullMax, c.hull + c.hullMax * 0.35)
+      this.audio.ui()
+      this.toast('Çekirdek onarıldı.')
+      return
+    }
+    if (c.level >= MAX_LEVEL) {
+      this.toast('Üs zaten en üst seviyede.')
+      return
+    }
+    const price = UPGRADE_COST[c.level + 1]
+    if (this.energy < price) {
+      this.toast(`Yükseltme ${price} enerji.`)
+      return
+    }
+    this.energy -= price
+    c.level++
+    c.hullMax = coreHullMax(c.level)
+    c.hull = c.hullMax
+    this.attachColony(c, planet)
+    this.audio.collect()
+    this.toast(`Üs seviye ${c.level}. Nüfus tavanı ${settlerCap(c.level, c.turrets.length)}, taret yuvası ${turretSlots(c.level)}.`)
+  }
+
+  private placeTurret() {
+    const planet = this.footPlanet
+    const c = this.colonyHere(planet)
+    if (!planet || !c) {
+      this.toast('Önce üs kur (B).')
+      return
+    }
+    if (!this.mine(c)) {
+      this.toast('Bu üs senin değil.')
+      return
+    }
+    const slots = turretSlots(c.level)
+    if (c.turrets.length >= slots) {
+      this.toast(`Taret yuvaları dolu (${slots}). Üssü yükselt.`)
+      return
+    }
+    if (this.energy < TURRET_COST) {
+      this.toast(`Taret ${TURRET_COST} enerji.`)
+      return
+    }
+    if (this.coreDistance(c, planet) > BUILD_REACH) {
+      this.toast('Üsse çok uzaksın.')
+      return
+    }
+    const R = planet.def.radius
+    vL.copy(this.pos).sub(planet.pos).normalize()
+    this.slideToward(vL, vM.copy(vL).addScaledVector(this.footForward, 0.6).normalize(), 3.6, R)
+    const local = this.toLocal(vL, planet, new Vector3())
+    const toCore = this.arc(local, c.dir, R)
+    if (toCore < 6.2) this.slideAway(local, c.dir, 6.2 - toCore, R)
+    for (const t of c.turrets) {
+      if (this.arc(local, t.dir, R) < 3.4) {
+        this.toast('Burada başka bir taret var.')
+        return
+      }
+    }
+    this.energy -= TURRET_COST
+    this.addTurret(c, planet, local)
+    this.worldDir(local, planet, vL)
+    this.surfacePos(vL, planet, 1.2, vM)
+    this.sparks.burst(vM, 0xe4a15c, 10, 6, 0.9, vL)
+    this.audio.ui()
+    this.toast(`Taret kuruldu (${c.turrets.length}/${slots}).`)
+  }
+
+  private callWave() {
+    const c = this.colonyHere()
+    if (!c) return
+    if (!this.mine(c)) {
+      this.toast('Bu üs senin değil.')
+      return
+    }
+    if (c.state === 'wave') {
+      this.toast('Dalga zaten sürüyor.')
+      return
+    }
+    c.countdown = 0
+    c.early = true
+  }
+
+  private waveGap(c: Colony) {
+    if (!this.mine(c)) return BOT_WAVE_GAP
+    return c.kind === 'colony' && c.founded ? WAVE_GAP * 3 : WAVE_GAP
+  }
+
+  private pickAttacker(c: Colony): OriginId {
+    const pool = ORIGINS.map((o) => o.id).filter((id) => id !== c.owner)
+    const local = Object.values(this.colonies)
+      .filter((x) => x.universe === c.universe && x.owner !== c.owner)
+      .map((x) => x.owner)
+    const from = local.length && Math.random() < 0.6 ? local : pool
+    return from[Math.floor(Math.random() * from.length)]
+  }
+
+  private startWave(c: Colony) {
+    c.state = 'wave'
+    c.attacker = this.pickAttacker(c)
+    c.queue = waveRoster(c.wave + 1)
+    c.spawnT = 0.6
+    this.waveBearing = Math.random() * Math.PI * 2
+    const who = factionName(c.attacker)
+    if (this.mine(c)) {
+      this.toast(`Dalga ${c.wave + 1} — ${who} saldırıyor (${c.queue.length} kişi)!`)
+      this.audio.warning()
+    } else this.toast(`${factionName(c.owner)} üssüne ${who} saldırıyor.`)
+  }
+
+  private finishWave(c: Colony, planet: Planet) {
+    c.wave++
+    c.state = 'idle'
+    c.attacker = null
+    c.countdown = this.waveGap(c)
+    c.hull = Math.min(c.hullMax, c.hull + c.hullMax * 0.2)
+    for (const t of c.turrets) t.hull = TURRET_HULL
+    if (!this.mine(c)) {
+      this.toast(`${factionName(c.owner)} üssü saldırıyı püskürttü.`)
+      return
+    }
+    const reward = waveReward(c.wave, c.early)
+    c.early = false
+    this.energy += reward
+    this.lastLoot = reward
+    this.addScore(60 + c.wave * 20)
+    this.audio.collect()
+    if (c.kind === 'colony' && !c.founded && c.wave >= SIEGE_WAVES) {
+      c.founded = true
+      c.countdown = this.waveGap(c)
+      this.energy += 60
+      this.addScore(300)
+      this.toast(`${planet.def.name} kolonileşti! Pasif enerji, kalkan bonusu ve nüfus artışı kazandın.`)
+      this.mirrorRun()
+      return
+    }
+    this.toast(`Dalga ${c.wave} savuşturuldu. +${reward} enerji.`)
+    if (c.kind === 'main' && c.wave > this.save.bestWave) {
+      this.save.bestWave = c.wave
+      writeSave(this.save)
+    }
+  }
+
+  /** Üs el değiştirir: yeni sahip düşük seviyeyle başlar, eski taretler ve yerleşimciler gider. */
+  private flipOwner(c: Colony, planet: Planet | null, owner: OriginId) {
+    this.units = this.units.filter((u) => {
+      if (u.colonyId !== c.planetId || u.invader) return true
+      this.flash.forget(u.root)
+      this.mapRoot.remove(u.root)
+      this.disposeMats(u.root)
+      return false
+    })
+    for (const t of c.turrets) {
+      t.root.removeFromParent()
+      this.disposeMats(t.root)
+    }
+    c.turrets = []
+    c.owner = owner
+    c.level = Math.max(1, c.level - 2)
+    c.hullMax = coreHullMax(c.level)
+    c.hull = c.hullMax
+    c.pop = 2
+    c.wave = 0
+    c.state = 'idle'
+    c.queue = []
+    c.attacker = null
+    c.founded = true
+    c.kind = 'colony'
+    c.countdown = this.waveGap(c)
+    if (planet) this.attachColony(c, planet)
+  }
+
+  private baseLost(c: Colony, planet: Planet, conqueror: OriginId | null) {
+    if (!this.mine(c) && conqueror) {
+      // Baskın ekibi üssü aldıysa ekip ölmez: yeni koloninin ilk nüfusu olur.
+      const raid = conqueror === this.originId ? this.units.filter((u) => u.alive && u.squad) : []
+      if (raid.length) {
+        for (const u of this.units) {
+          if (raid.includes(u)) continue
+          this.flash.forget(u.root)
+          this.mapRoot.remove(u.root)
+          this.disposeMats(u.root)
+        }
+        this.units = raid
+        this.tracers?.clear()
+      } else {
+        for (const u of this.units) if (u.invader) u.alive = false
+        this.clearGround()
+      }
+      this.flipOwner(c, planet, conqueror)
+      for (const u of raid) {
+        u.squad = false
+        u.colonyId = c.planetId
+        u.goal = null
+      }
+      if (raid.length) c.pop = Math.max(c.pop, raid.length)
+      this.trauma = Math.min(1, this.trauma + 0.4)
+      this.audio.boom()
+      this.toast(
+        raid.length
+          ? `Baskın başarılı! Ekibin ${planet.def.name} üssünü ele geçirdi; ${raid.length} kişi burada kaldı.`
+          : conqueror === this.originId
+            ? `Türün ${planet.def.name} üssünü ele geçirdi!`
+            : `${factionName(conqueror)} ${planet.def.name} üssünü ele geçirdi.`,
+      )
+      this.mirrorRun()
+      return
+    }
+    const wasMine = this.mine(c)
+    this.clearGround()
+    this.detachColony(c)
+    delete this.colonies[c.planetId]
+    this.trauma = 1
+    this.audio.boom()
+    if (wasMine) this.toast(`${c.kind === 'main' ? 'Üs' : 'Karakol'} düştü. Yeniden kurabilirsin (B).`)
+    else {
+      // Yıkılan karakolun gezegeninde yeni doğum yok: yerli gelmez, botlar bir süre kuramaz.
+      this.cleared.add(c.planetId)
+      this.razed.set(c.planetId, this.properTime)
+      this.energy += 40
+      this.addScore(150)
+      this.toast(`${factionName(c.owner)} üssü yıkıldı. +40 enerji. Gezegen boş; kendi üssünü kurabilirsin (B).`)
+    }
+    this.mirrorRun()
+  }
+
+  private makeUnit(kind: UnitKind, faction: OriginId, invader: boolean, c: Colony | null, planet: Planet, dir: Vector3): Unit {
+    const spec = invader ? INVADER[kind as InvaderKind] : SETTLER[kind as SettlerKind]
+    const look = originLook(faction)
+    // Yancılar ve koşucular ırkın küçük sürümüdür; ana karakterler ve ağır istilacılar tam gövde.
+    const rig = kind === 'settler' || kind === 'runner' ? buildMinion(look) : buildCreature(look)
+    rig.root.scale.multiplyScalar(spec.scale)
+    const friendly = faction === this.originId
+    const marker = new Mesh(
+      new RingGeometry(0.55, 0.74, 16),
+      new MeshBasicMaterial({ color: friendly ? 0x7dff8a : 0xff5a4a, side: DoubleSide, transparent: true, opacity: 0.8, depthWrite: false }),
+    )
+    marker.rotation.x = -Math.PI / 2
+    marker.position.y = FEET + 0.05
+    rig.root.add(marker)
+    rig.root.position.copy(planet.pos).addScaledVector(dir, planet.def.radius + 1.05)
+    this.mapRoot.add(rig.root)
+    const hull = !c ? spec.hull : invader ? Math.round(spec.hull * waveHullMul(c.wave + 1)) : Math.round(spec.hull * (1 + 0.12 * (c.level - 1)))
+    const unit: Unit = {
+      alive: true,
+      kind,
+      spec,
+      faction,
+      invader,
+      colonyId: c?.planetId ?? '',
+      root: rig.root,
+      rig,
+      dir,
+      hull,
+      hullMax: hull,
+      cool: 0.5 + Math.random() * 0.6,
+      phase: Math.random() * 6,
+      attack: 0,
+      goal: null,
+    }
+    unit.seq = this.unitSeq++
+    this.units.push(unit)
+    return unit
+  }
+
+  private spawnInvader(c: Colony, planet: Planet, kind: InvaderKind) {
+    const R = planet.def.radius
+    const core = this.worldDir(c.dir, planet, vJ)
+    const far = Math.min(54, Math.PI * R * 0.8)
+    const dist = Math.max(18, far - 6 * Math.random())
+    const dir = this.offsetDir(core, this.waveBearing + (Math.random() - 0.5) * 1.5, Math.min(dist, far), R, new Vector3())
+    const unit = this.makeUnit(kind, c.attacker ?? this.pickAttacker(c), true, c, planet, dir)
+    this.surfacePos(dir, planet, 1.5, vM)
+    this.sparks.burst(vM, unit.spec.color, 6, 6, 1.0, dir)
+  }
+
+  private spawnSettler(c: Colony, planet: Planet, kind: SettlerKind) {
+    const R = planet.def.radius
+    const core = this.worldDir(c.dir, planet, vJ)
+    const dir = this.offsetDir(core, Math.random() * Math.PI * 2, Math.min(5.5 + Math.random() * 5, Math.PI * R * 0.4), R, new Vector3())
+    this.makeUnit(kind, c.owner, false, c, planet, dir)
+    this.surfacePos(dir, planet, 1.2, vM)
+    this.sparks.burst(vM, 0xfff1c4, 5, 4, 0.8, dir)
+  }
+
+  private updateSettlers(c: Colony, planet: Planet, dt: number) {
+    const cap = settlerCap(c.level, c.turrets.length)
+    c.pop = Math.min(c.pop, cap)
+    const target = Math.floor(c.pop)
+    let alive = 0
+    let heroes = 0
+    for (const u of this.units) {
+      if (!u.alive || u.invader || u.squad || u.colonyId !== c.planetId) continue
+      alive++
+      if (isHero(u.kind)) heroes++
+    }
+    c.settleT -= dt
+    if (alive < target && c.settleT <= 0) {
+      // Baskın sürerken düşman üssü savunmacısını yavaş çıkarır; baskın sürpriz etkisi taşır.
+      c.settleT = !this.mine(c) && this.units.some((u) => u.alive && u.squad) ? 3 : 0.4
+      this.spawnSettler(c, planet, heroes < heroCap(c.level) ? heroKind(heroes) : 'settler')
+    }
+  }
+
+
+  private killUnit(u: Unit, planet: Planet, credit: boolean) {
+    u.alive = false
+    this.flash.forget(u.root)
+    this.mapRoot.remove(u.root)
+    this.disposeMats(u.root)
+    this.surfacePos(u.dir, planet, 1.2, vM)
+    this.sparks.burst(vM, u.spec.color, 14, 10, 1.4, u.dir)
+    if (!u.invader && !u.squad) {
+      const col = this.colonies[u.colonyId]
+      if (col) col.pop = Math.max(0, col.pop - 1)
+    }
+    if (credit) {
+      this.spawnBoom(vM, u.kind === 'queen' ? 1.4 : 0.5, u.spec.color)
+      this.audio.boom()
+      if (u.invader || u.faction !== this.originId) {
+        this.kills++
+        this.addScore(Math.max(6, u.spec.score))
+      }
+    }
+  }
+
+  private hitUnit(u: Unit, dmg: number, from: Vector3, planet: Planet, credit: boolean) {
+    // Baskın ekibi kalkanlı iner: aldığı hasar yarıya düşer.
+    if (u.squad) dmg *= 0.5
+    u.hull -= dmg
+    this.impact(u.root.position, dmg, u.rig, u.spec.color, vK.copy(u.dir))
+    this.slideAway(u.dir, from, u.kind === 'queen' ? 0.15 : u.kind === 'brute' || u.kind === 'guard' ? 0.45 : 0.9, planet.def.radius)
+    if (u.hull <= 0) this.killUnit(u, planet, credit)
+  }
+
+  private hitLocal(local: Local, dmg: number, planet: Planet, from?: Vector3) {
+    const R = planet.def.radius
+    local.hull -= dmg
+    if (from) vJ.copy(from)
+    else vJ.copy(this.pos).sub(planet.pos).normalize()
+    this.impact(local.root.position, dmg, local.rig, 0xffe2b0, vK.copy(local.home))
+    this.slideAway(local.home, vJ, 0.9, R)
+    if (local.hull <= 0) {
+      local.alive = false
+      this.flash.forget(local.root)
+      local.root.visible = false
+      this.addScore(12)
+      this.spawnBoom(local.root.position, 0.4, 0xffd2b4)
+      if (this.locals.every((l) => !l.alive)) {
+        this.cleared.add(planet.def.id)
+        this.toast(`${planet.def.name} yerlilerinden temizlendi. Karakol kurunca türün burada çoğalır (B).`)
+      }
+    }
+  }
+
+  private updateColonyWave(c: Colony, planet: Planet, dt: number) {
+    if (c.state === 'idle') {
+      c.countdown -= dt
+      if (c.countdown <= 0) this.startWave(c)
+      return
+    }
+    c.spawnT -= dt
+    if (c.queue.length && c.spawnT <= 0) {
+      c.spawnT = 0.85
+      const next = c.queue.shift()
+      if (next) this.spawnInvader(c, planet, next)
+    }
+    if (!c.queue.length && !this.units.some((u) => u.alive && u.invader)) this.finishWave(c, planet)
+  }
+
+  private updateUnits(planet: Planet, c: Colony | null, dt: number) {
+    this.unitFrame++
+    const R = planet.def.radius
+    this.units = this.units.filter((u) => u.alive)
+    const crew = this.units.some((u) => u.squad)
+    if (!c && !crew) {
+      if (this.units.length) this.clearGround()
+      return
+    }
+    const playerDir = vH2.copy(this.pos).sub(planet.pos).normalize()
+    const coreDir = c ? this.worldDir(c.dir, planet, vI2) : null
+    const peaceful = Boolean(planet.def.home && this.isHome())
+    const list = this.units.slice()
+    for (const u of list) {
+      if (!u.alive) continue
+      u.phase += dt
+      u.cool = Math.max(0, u.cool - dt)
+      u.attack = Math.max(0, u.attack - dt)
+      let kind: 'none' | 'player' | 'unit' | 'turret' | 'core' | 'local' = 'none'
+      let target: Vector3 | null = null
+      let radius = 0
+      let enemy: Unit | null = null
+      let prey: Local | null = null
+      let turret: Turret | null = null
+      let best = 99
+      if (this.hostileToPlayer(u.faction)) {
+        const d = this.arc(u.dir, playerDir, R)
+        if (d < 12) {
+          best = d
+          kind = 'player'
+          target = playerDir
+          radius = PLAYER_RADIUS
+        }
+      }
+      for (const v of list) {
+        if (!v.alive || v.faction === u.faction) continue
+        const d = this.arc(u.dir, v.dir, R)
+        // Yerleşimciler üssü savunmak için istilacıları uzaktan da fark eder.
+        // Baskın ekibi daha uzağı görür; düşman yerleşimci baskıncıyı da istilacı gibi karşılar.
+        const sight = !u.invader && (v.invader || v.squad) ? 34 : u.squad ? 22 : 10
+        if (d < sight && d < best) {
+          best = d
+          kind = 'unit'
+          enemy = v
+          target = v.dir
+          radius = v.spec.radius
+        }
+      }
+      if (u.squad && !peaceful) {
+        for (const local of this.locals) {
+          if (!local.alive || local.friendly) continue
+          const d = this.arc(u.dir, local.home, R)
+          if (d < 30 && d < best) {
+            best = d
+            kind = 'local'
+            prey = local
+            enemy = null
+            target = local.home
+            radius = 0.8
+          }
+        }
+      }
+      if ((u.invader || u.squad) && c && coreDir && u.faction !== c.owner) {
+        for (const t of c.turrets) {
+          if (!t.alive) continue
+          const td = this.worldDir(t.dir, planet, vJ2)
+          const d = this.arc(u.dir, td, R)
+          if (d < 11 && d < best) {
+            best = d
+            kind = 'turret'
+            turret = t
+            enemy = null
+            target = this.tmpTurretDir.copy(td)
+            radius = TURRET_RADIUS
+          }
+        }
+        // Baskın ekibi uzaktaki çekirdeğe tek başına yürümez; oyuncu yaklaştırınca hücum eder.
+        if (kind === 'none' && (!u.squad || this.arc(u.dir, coreDir, R) < 70)) {
+          kind = 'core'
+          target = coreDir
+          radius = CORE_RADIUS
+        }
+      }
+      let moving = false
+      if (kind === 'none' && u.squad) {
+        // Baskın ekibi boştayken oyuncunun peşinden gelir.
+        const gap = this.arc(u.dir, playerDir, R)
+        if (gap > 4.5) {
+          this.slideToward(u.dir, playerDir, u.spec.speed * (gap > 14 ? 1.25 : 0.9) * dt, R)
+          moving = true
+          vK.copy(playerDir).addScaledVector(u.dir, -u.dir.dot(playerDir))
+          if (vK.lengthSq() > 1e-8) {
+            vK.normalize()
+            vL.crossVectors(u.dir, vK).normalize()
+            u.root.quaternion.setFromRotationMatrix(basis.makeBasis(vL, u.dir, vK))
+          }
+        }
+        u.root.position.copy(planet.pos).addScaledVector(u.dir, R + 1.05)
+        if (this.animNow(u)) this.stepRig(u.rig, moving ? u.spec.speed : 0, false, u.attack)
+        continue
+      }
+      if (kind === 'none') {
+        // Yerleşimci: üssün çevresinde dolaşır.
+        if (!u.invader && coreDir) {
+          const home = coreDir
+          if (!u.goal) u.goal = new Vector3()
+          if (u.phase > 1e8 || u.goal.lengthSq() < 0.5 || this.arc(u.dir, u.goal, R) < 1.2) {
+            this.offsetDir(home, Math.random() * Math.PI * 2, 4 + Math.random() * 18, R, u.goal)
+            u.phase = 0
+          }
+          if (this.arc(u.dir, u.goal, R) > 1.2) {
+            this.slideToward(u.dir, u.goal, u.spec.speed * 0.45 * dt, R)
+            moving = true
+            vK.copy(u.goal).addScaledVector(u.dir, -u.dir.dot(u.goal))
+            if (vK.lengthSq() > 1e-8) {
+              vK.normalize()
+              vL.crossVectors(u.dir, vK).normalize()
+              u.root.quaternion.setFromRotationMatrix(basis.makeBasis(vL, u.dir, vK))
+            }
+          }
+        }
+        u.root.position.copy(planet.pos).addScaledVector(u.dir, R + 1.05)
+        if (this.animNow(u)) this.stepRig(u.rig, moving ? u.spec.speed * 0.5 : 0, false, u.attack)
+        continue
+      }
+      if (!target) continue
+      const gap = this.arc(u.dir, target, R)
+      const hold = u.spec.reach * 0.8 + radius + u.spec.radius
+      const reach = u.spec.reach + radius + u.spec.radius
+      if (gap > hold) {
+        this.slideToward(u.dir, target, u.spec.speed * dt, R)
+        moving = true
+      }
+      u.root.position.copy(planet.pos).addScaledVector(u.dir, R + 1.05)
+      vK.copy(target).addScaledVector(u.dir, -u.dir.dot(target))
+      if (vK.lengthSq() > 1e-8) {
+        vK.normalize()
+        vL.crossVectors(u.dir, vK).normalize()
+        u.root.quaternion.setFromRotationMatrix(basis.makeBasis(vL, u.dir, vK))
+      }
+      if (gap <= reach && u.cool <= 0) {
+        u.cool = u.spec.cool
+        u.attack = 0.35
+        const dmg = u.squad
+          ? Math.round(u.spec.dmg * 1.5)
+          : u.invader
+            ? Math.round(u.spec.dmg * (1 + (c?.wave ?? 0) * 0.04))
+            : Math.round(u.spec.dmg * (1 + 0.15 * ((c?.level ?? 1) - 1)))
+        if (u.spec.reach > 6) {
+          vM.copy(u.root.position).addScaledVector(u.dir, 1.4)
+          if (kind === 'player') vL.copy(this.pos).addScaledVector(playerDir, 1)
+          else this.surfacePos(target, planet, 1.5, vL)
+          this.tracers.fire(vM, vL, u.spec.color, 0.14, 0.18)
+        }
+        if (kind === 'player') this.footHurt(dmg)
+        else if (kind === 'unit' && enemy) this.hitUnit(enemy, dmg, u.dir, planet, u.faction === this.originId)
+        else if (kind === 'local' && prey) this.hitLocal(prey, dmg, planet, u.dir)
+        else if (kind === 'turret' && turret && c) {
+          turret.hull -= dmg
+          this.surfacePos(target, planet, 1.5, vM)
+          this.sparks.burst(vM, 0xffb15a, 6, 6, 0.9, target)
+          if (turret.hull <= 0) this.destroyTurret(c, turret, planet)
+        } else if (kind === 'core' && c) {
+          c.hull -= dmg
+          this.surfacePos(target, planet, 2.2, vM)
+          this.sparks.burst(vM, 0xffb15a, 6, 7, 1, target)
+          this.trauma = Math.min(0.6, this.trauma + 0.05)
+          if (c.hull <= 0) {
+            this.baseLost(c, planet, u.faction)
+            return
+          }
+        }
+      }
+      if (this.animNow(u)) this.stepRig(u.rig, moving ? u.spec.speed : 0.4, false, u.attack)
+    }
+  }
+
+  /** Mobil performans: uzak birimlerin uzuv animasyonu her 3 karede bir, çok uzaktakiler her 6 karede bir işlenir. */
+  private animNow(u: Unit) {
+    const d2 = u.root.position.distanceToSquared(this.pos)
+    if (d2 < 30 * 30) return true
+    const every = d2 < 60 * 60 ? 3 : 6
+    return (this.unitFrame + (u.seq ?? 0)) % every === 0
+  }
+
+  private updateTurrets(planet: Planet, c: Colony | null, dt: number) {
+    if (!c) return
+    const mine = this.mine(c)
+    for (const t of c.turrets) {
+      if (!t.alive) continue
+      t.cool = Math.max(0, t.cool - dt)
+      const td = this.worldDir(t.dir, planet, vJ)
+      this.surfacePos(td, planet, 1.7, vK)
+      let target: Unit | null = null
+      let best = TURRET_RANGE
+      for (const u of this.units) {
+        if (!u.alive || u.faction === c.owner) continue
+        const d = vK.distanceTo(u.root.position)
+        if (d < best) {
+          best = d
+          target = u
+        }
+      }
+      let atPlayer = false
+      if (!mine) {
+        const d = vK.distanceTo(this.pos)
+        if (d < Math.min(best, TURRET_RANGE * 0.8)) {
+          best = d
+          target = null
+          atPlayer = true
+        }
+      }
+      if (!target && !atPlayer) continue
+      t.root.updateWorldMatrix(true, false)
+      vL.copy(atPlayer ? this.pos : (target as Unit).root.position)
+      t.root.worldToLocal(vL)
+      const yaw = Math.atan2(vL.x, vL.z)
+      let dy = yaw - t.head.rotation.y
+      dy = Math.atan2(Math.sin(dy), Math.cos(dy))
+      t.head.rotation.y += dy * (1 - Math.exp(-12 * dt))
+      if (t.cool > 0) continue
+      t.cool = turretCooldown(c.level) * (atPlayer ? 1.4 : 1)
+      if (atPlayer) {
+        vM.copy(this.pos).addScaledVector(td, 1)
+        this.tracers.fire(vK, vM, 0xff7a5a, 0.12, 0.14)
+        this.audio.laser(true)
+        this.footHurt(Math.round(turretDamage(c.level) * 0.8))
+        continue
+      }
+      const u = target as Unit
+      vM.copy(u.root.position).addScaledVector(u.dir, 0.9)
+      this.tracers.fire(vK, vM, 0xffd27a, 0.1, 0.12)
+      this.audio.laser(false)
+      this.hitUnit(u, turretDamage(c.level), td, planet, mine)
+    }
+  }
+
+  private separate(planet: Planet, c: Colony | null) {
+    const R = planet.def.radius
+    const list = this.sepList
+    list.length = 0
+    const pd = vH2.copy(this.pos).sub(planet.pos).normalize()
+    const playerStart = vJ2.copy(pd)
+    list.push({ dir: pd, r: PLAYER_RADIUS, kind: 1 })
+    if (c) {
+      list.push({ dir: this.worldDir(c.dir, planet, this.sepCore), r: CORE_RADIUS, kind: 0 })
+      c.turrets.forEach((t, i) => {
+        if (!t.alive) return
+        if (!this.sepTurrets[i]) this.sepTurrets[i] = new Vector3()
+        list.push({ dir: this.worldDir(t.dir, planet, this.sepTurrets[i]), r: TURRET_RADIUS, kind: 0 })
+      })
+    }
+    for (const local of this.locals) if (local.alive) list.push({ dir: local.home, r: 0.8, kind: 2 })
+    for (const u of this.units) if (u.alive) list.push({ dir: u.dir, r: u.spec.radius, kind: 2 })
+    for (let pass = 0; pass < 3; pass++) {
+      for (let i = 0; i < list.length; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+          const a = list[i]
+          const b = list[j]
+          if (a.kind === 0 && b.kind === 0) continue
+          const gap = this.arc(a.dir, b.dir, R)
+          const need = a.r + b.r
+          if (gap >= need) continue
+          const over = need - gap + 0.001
+          const lo = a.kind <= b.kind ? a : b
+          const hi = lo === a ? b : a
+          if (lo.kind < hi.kind) this.slideAway(hi.dir, lo.dir, over, R)
+          else {
+            this.slideAway(a.dir, b.dir, over * 0.5, R)
+            this.slideAway(b.dir, a.dir, over * 0.5, R)
+          }
+        }
+      }
+    }
+    if (pd.dot(playerStart) < 0.9999999) this.pos.copy(planet.pos).addScaledVector(pd, R + this.footAlt)
+  }
+
+  private updateGround(dt: number) {
+    const planet = this.footPlanet
+    if (!planet) return
+    this.hitCd = Math.max(0, this.hitCd - dt)
+    this.flash.update(dt)
+    this.sparks.update(dt)
+    this.tracers.update(dt)
+    this.swing.update(dt)
+    const controlsOpen = !this.dom.controls.classList.contains('hidden')
+    const buildEdge = this.input.pressed('KeyB') || (this.input.touchBuild && !this.buildWas)
+    const turretEdge = this.input.pressed('KeyT') || (this.input.touchTurret && !this.turretWas)
+    const waveEdge = this.input.pressed('KeyV') || (this.input.touchWave && !this.waveWas)
+    const upgradeEdge = this.input.pressed('KeyE') || (this.input.touchUpgrade && !this.upgradeWas)
+    this.upgradeWas = this.input.touchUpgrade
+    const squadEdge = this.input.pressed('KeyK') || (this.input.touchSquad && !this.squadWas)
+    this.squadWas = this.input.touchSquad
+    if (squadEdge && !controlsOpen) this.squadAction()
+    if (upgradeEdge && !controlsOpen && this.nearParkedShip()) this.openUpgrades()
+    this.buildWas = this.input.touchBuild
+    this.turretWas = this.input.touchTurret
+    this.waveWas = this.input.touchWave
+    if (!controlsOpen) {
+      if (buildEdge) this.baseAction()
+      if (turretEdge) this.placeTurret()
+      if (waveEdge) this.callWave()
+    }
+    const c = this.colonyHere(planet)
+    if (c) {
+      this.updateColonyWave(c, planet, dt)
+      this.updateSettlers(c, planet, dt)
+    }
+    this.updateUnits(planet, this.colonyHere(planet), dt)
+    this.updateTurrets(planet, this.colonyHere(planet), dt)
+    this.separate(planet, this.colonyHere(planet))
+    this.paintCoreBar(this.colonyHere(planet))
+  }
+
+  /** Kendi üssünün yanında: K ekibi toplar ya da yerdeki ekibi koloniye geri bırakır. */
+  private squadAction() {
+    const planet = this.footPlanet
+    if (!planet) return
+    const c = this.colonyHere(planet)
+    const ground = this.units.filter((u) => u.alive && u.squad)
+    if (!c || !this.mine(c) || this.coreDistance(c, planet) > CORE_REACH * 2) {
+      this.toast(ground.length ? `Ekibin seninle (${ground.length}). Bir gezegene in, yerlilere ve düşman üssüne saldırsınlar.` : 'Ekip toplamak için kendi üssünün çekirdeğine yaklaş (K).')
+      return
+    }
+    if (ground.length) {
+      for (const u of ground) {
+        u.squad = false
+        u.colonyId = c.planetId
+        u.goal = null
+      }
+      c.pop += ground.length
+      this.toast(`Ekip koloniye döndü. Nüfus ${Math.floor(c.pop)}.`)
+      return
+    }
+    const pool = this.units.filter((u) => u.alive && !u.invader && !u.squad && u.colonyId === c.planetId && u.faction === this.originId)
+    if (pool.length < 2) {
+      this.toast('Ekip için üste en az 2 yerleşimci olmalı. Üssü yükselt, nüfus artsın.')
+      return
+    }
+    const heroes = pool.filter((u) => isHero(u.kind)).slice(0, SQUAD_HEROES)
+    const minions = pool.filter((u) => !isHero(u.kind))
+    const room = Math.min(SQUAD_MAX, pool.length - 1)
+    const pick = [...heroes, ...minions].slice(0, room)
+    for (const u of pick) {
+      u.squad = true
+      u.colonyId = ''
+      u.goal = null
+    }
+    c.pop = Math.max(0, c.pop - pick.length)
+    const h = pick.filter((u) => isHero(u.kind)).length
+    this.toast(`Ekibin hazır: ${pick.length} kişi${h ? ` (${h} ana karakter)` : ''}. Gemine bin; indiğin gezegende yerlilere ve düşman üssüne saldırırlar.`)
+    this.audio.collect()
+  }
+
+  /** Yerdeki ekip yeni kurulan karakola katılır; katılan sayısını döndürür. */
+  private joinSquad(c: Colony) {
+    const crew = this.units.filter((u) => u.alive && u.squad)
+    for (const u of crew) {
+      u.squad = false
+      u.colonyId = c.planetId
+      u.goal = null
+    }
+    c.pop += crew.length
+    return crew.length
+  }
+
+  private squadSize() {
+    if (this.layer === 'ship') return this.squad.length
+    let n = 0
+    for (const u of this.units) if (u.alive && u.squad) n++
+    return n
+  }
+
+  private disembark(planet: Planet) {
+    this.clearEscorts()
+    if (!this.squad.length) return
+    const R = planet.def.radius
+    const me = vA.copy(this.pos).sub(planet.pos).normalize().clone()
+    this.squad.forEach((m, i) => {
+      const dir = this.offsetDir(me, (i / this.squad.length) * Math.PI * 2, 3.5 + (i % 2) * 1.5, R, new Vector3())
+      const u = this.makeUnit(m.kind, this.originId, false, null, planet, dir)
+      u.squad = true
+      u.hullMax = m.hullMax
+      u.hull = Math.max(1, m.hull)
+    })
+    this.squad = []
+  }
+
+  private buildEscorts() {
+    this.clearEscorts()
+    const n = Math.min(4, Math.ceil(this.squad.length / 2))
+    for (let i = 0; i < n; i++) {
+      const ship = buildShip(this.originId)
+      ship.shield.visible = false
+      ship.engineLight.removeFromParent()
+      ship.root.scale.multiplyScalar(0.5)
+      ship.root.position.copy(this.pos)
+      ship.root.quaternion.copy(this.quat)
+      this.scene.add(ship.root)
+      this.escorts.push(ship.root)
+    }
+  }
+
+  private clearEscorts() {
+    for (const e of this.escorts) {
+      e.removeFromParent()
+      this.disposeMats(e)
+    }
+    this.escorts = []
+  }
+
+  /** Eşlik gemileri oyuncunun arkasında kanat düzeninde uçar, çatışmada en yakın düşmana ateş eder. */
+  private updateEscorts(dt: number) {
+    if (!this.escorts.length) return
+    const show = this.layer === 'ship' && (this.mode === 'map' || this.mode === 'combat')
+    const k = 1 - Math.exp(-5 * dt)
+    this.escorts.forEach((e, i) => {
+      e.visible = show
+      const slot = ESCORT_SLOTS[i]
+      vA.set(slot[0], slot[1], slot[2]).applyQuaternion(this.quat).add(this.pos)
+      if (e.position.distanceToSquared(this.pos) > 400 * 400) e.position.copy(vA)
+      else e.position.lerp(vA, k)
+      e.quaternion.slerp(this.quat, k)
+    })
+    if (!show || this.mode === 'upgrade') return
+    this.escortCd -= dt
+    if (this.escortCd > 0) return
+    this.escortCd = 1.4
+    for (const e of this.escorts) {
+      let best: Enemy | null = null
+      let bd = 170
+      for (const en of this.enemies) {
+        if (!en.alive) continue
+        const d = en.pos.distanceTo(e.position)
+        if (d < bd) {
+          bd = d
+          best = en
+        }
+      }
+      if (!best) return
+      vB.copy(best.pos).sub(e.position).normalize()
+      this.spawnShot(true, e.position, vB, 7 + this.squad.length, 'bolt')
+    }
+  }
+
+  private onLandColony(planet: Planet) {
+    const c = this.colonyHere(planet)
+    this.clearGround()
+    if (!c) return
+    c.state = 'idle'
+    c.queue = []
+    c.attacker = null
+    c.countdown = Math.max(c.countdown, 12)
+    if (!this.mine(c)) this.toast(`${planet.def.name}: ${factionName(c.owner)} üssü. Yerleşimcileri sana düşman!`)
+    else if (c.kind === 'colony' && c.founded) this.toast(`${planet.def.name}: koloniye döndün. Nüfus ${Math.floor(c.pop)}.`)
+    else this.toast(`${planet.def.name}: üssündesin. Sonraki dalga ${Math.ceil(c.countdown)} sn.`)
+  }
+
+  private onBoardColony() {
+    const c = this.colonyHere()
+    const had = this.units.some((u) => u.invader)
+    this.clearGround()
+    if (c && (c.state === 'wave' || had)) {
+      c.state = 'idle'
+      c.queue = []
+      c.attacker = null
+      c.countdown = this.mine(c) ? 18 : BOT_WAVE_GAP
+      if (this.mine(c)) this.toast('Dalga yarıda kaldı. Üs seni bekliyor.')
+    }
+  }
+
+  /** Dar (dikey telefon) ekranda istem tek satırda kalsın: yalnız ilk iki eylem. */
+  private footPrompt(): string {
+    const text = this.footPromptFull()
+    return this.camera.aspect < 1 ? text.split(' · ').slice(0, 2).join(' · ') : text
+  }
+
+  private footPromptFull(): string {
+    const planet = this.footPlanet
+    if (!planet) return ''
+    if (this.nearParkedShip()) {
+      const price = this.cheapestUpgrade()
+      if (price !== null && this.energy >= price) return 'Sol tık / E — gemiyi geliştir · L — bin'
+      if (price !== null) return `Gemi · geliştirme için ${fmt(Math.ceil(price - this.energy))} enerji daha · L — bin`
+    }
+    const nearShip = this.pos.distanceTo(this.parkedShip) < 14
+    const tail = nearShip ? `L — bin · ${planet.def.name}` : `${planet.def.name} · Boşluk zıpla · F yumruk`
+    const c = this.colonyHere(planet)
+    if (!c) {
+      if (planet.def.landable === false || planet.def.heat) return tail
+      const main = Boolean(planet.def.home && this.isHome())
+      return `B — ${main ? 'üs kur' : 'karakol kur'} (${main ? BASE_COST_HOME : OUTPOST_COST}) · ${tail}`
+    }
+    if (!this.mine(c)) return `${factionName(c.owner)} üssü — çekirdeğe vur (F) · ${tail}`
+    const near = this.coreDistance(c, planet) <= CORE_REACH
+    if (near) {
+      const act = c.hull < c.hullMax * 0.999 ? `onar (${REPAIR_COST})` : c.level < MAX_LEVEL ? `yükselt (${UPGRADE_COST[c.level + 1]})` : 'üs tam'
+      const crew = this.units.some((u) => u.alive && u.squad)
+      return `B — ${act} · K — ${crew ? 'ekibi bırak' : 'ekip topla'} · T — taret (${TURRET_COST}) · ${tail}`
+    }
+    return `T — taret (${TURRET_COST}) · ${tail}`
+  }
+
+  private paintBase() {
+    const hud = must<HTMLElement>('base-hud')
+    const planet = this.footPlanet
+    const c = this.layer === 'foot' ? this.colonyHere(planet) : null
+    hud.classList.toggle('hidden', !c)
+    this.domSet('colony-flag', `Koloni ${this.colonyCount()}`)
+    must<HTMLElement>('colony-flag').classList.toggle('hidden', this.colonyCount() === 0)
+    const crew = this.squadSize()
+    this.domSet('squad-flag', `Ekip ${crew}`)
+    must<HTMLElement>('squad-flag').classList.toggle('hidden', crew === 0)
+    const own = c && this.mine(c) && planet && this.coreDistance(c, planet) <= CORE_REACH * 2
+    document.body.classList.toggle('squad-ready', Boolean(own))
+    if (!c) return
+    let title: string
+    if (!this.mine(c)) title = `${factionName(c.owner)} üssü · sv ${c.level} · düşman`
+    else if (c.kind === 'main') title = `Ana üs · sv ${c.level} · rekor dalga ${this.save.bestWave}`
+    else title = c.founded ? `Koloni · sv ${c.level}` : `Karakol · kuşatma ${Math.min(c.wave, SIEGE_WAVES)}/${SIEGE_WAVES}`
+    this.domSet('base-title', title)
+    must<HTMLElement>('base-core-fill').style.width = `${clamp(c.hull / c.hullMax, 0, 1) * 100}%`
+    const left = c.queue.length + this.units.filter((u) => u.alive && u.invader).length
+    const cap = settlerCap(c.level, c.turrets.length)
+    let line: string
+    if (c.state === 'wave') line = `Dalga ${c.wave + 1} · ${c.attacker ? factionName(c.attacker) : ''} · kalan ${left}`
+    else if (this.mine(c)) line = `Dalga ${c.wave + 1} · ${Math.max(0, Math.ceil(c.countdown))} sn · V erken çağır`
+    else line = 'Savunuyor'
+    const store = this.mine(c) && c.level < MAX_LEVEL && c === this.homeColony() ? ` · Ganimet deposu ${Math.floor(c.store ?? 0)}/${UPGRADE_COST[c.level + 1]}` : ''
+    this.domSet('base-line', `${line} · Nüfus ${Math.floor(c.pop)}/${cap} · Taret ${c.turrets.length}/${turretSlots(c.level)}${store}`)
+  }
+
+  /* ---------- Botlar: diğer türlerin üsleri ---------- */
+
+  private botColony(planet: { def: PlanetDef }, owner: OriginId, level: number, rnd: () => number, uid: UniId = this.universeId) {
+    const R = planet.def.radius
+    const dir = new Vector3(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5)
+    if (dir.lengthSq() < 1e-4) dir.set(0, 1, 0)
+    dir.normalize()
+    const c = this.newColony(planet, owner, false, level, dir, uid)
+    c.founded = true
+    c.countdown = BOT_WAVE_GAP * (0.5 + rnd())
+    c.pop = settlerCap(level, 0) * 0.75
+    const count = Math.min(turretSlots(level), level + 1)
+    for (let i = 0; i < count; i++) {
+      const d = this.offsetDir(dir, (i / count) * Math.PI * 2 + rnd(), 8 + rnd() * 4, R, new Vector3())
+      c.turrets.push({ dir: d, root: new Group(), head: new Group(), cool: rnd(), hull: TURRET_HULL, alive: true })
+    }
+    this.colonies[planet.def.id] = c
+    return c
+  }
+
+  private seedBotColonies() {
+    const uid = this.universeId
+    if (this.botSeeded.has(uid)) return
+    this.botSeeded.add(uid)
+    // Ev sistemleri dünya kurulurken tohumlanır (seedWorld); oyuncunun ev sisteminde başta bot yok.
+    if (ORIGINS.some((o) => homeSystem(o.id) === uid)) return
+    const rnd = makeRng(hashSeed(`bots:${uid}`))
+    const others = ORIGINS.map((o) => o.id).filter((id) => id !== this.originId)
+    const homeOwner = ORIGINS.find((o) => homeSystem(o.id) === uid && o.id !== this.originId)
+    const homePlanet = this.planets.find((p) => p.def.home)
+    if (homeOwner && homePlanet && !this.colonies[homePlanet.def.id]) this.botColony(homePlanet, homeOwner.id, 3, rnd)
+    const free = () => this.planets.filter((p) => p.def.landable !== false && !p.def.heat && !p.def.home && !this.colonies[p.def.id])
+    const count = Math.floor(rnd() * 3)
+    for (let i = 0; i < count; i++) {
+      const pool = free()
+      if (!pool.length) break
+      const planet = pool[Math.floor(rnd() * pool.length)]
+      this.botColony(planet, others[Math.floor(rnd() * others.length)], 1 + Math.floor(rnd() * 2), rnd)
+    }
+  }
+
+  /* ---------- Dünya: türler, ev sistemleri, bot genişlemesi ---------- */
+
+  /** Her tür kendi ev sisteminde, ev gezegeninde karakolla başlar. Oyuncunun sistemi oyuncunun. */
+  private seedWorld() {
+    for (const o of ORIGINS) {
+      const uid = homeSystem(o.id)
+      this.botSeeded.add(uid)
+      if (o.id === this.originId) continue
+      const def = UNIVERSES[uid].planets.find((d) => d.home)
+      if (!def || this.colonies[def.id]) continue
+      const rnd = makeRng(hashSeed(`world:${uid}`))
+      const c = this.botColony({ def }, o.id, BOT_START_LEVEL, rnd, uid)
+      c.countdown = BOT_WAVE_GAP
+    }
+  }
+
+  /** Oyuncunun ev gezegeninde başlangıç karakolu (sv 1, bir taret). */
+  private foundStartOutpost(planet: Planet, towardWorld: Vector3) {
+    const R = planet.def.radius
+    const local = this.toLocal(towardWorld, planet, new Vector3())
+    const c = this.newColony(planet, this.originId, true, 1, local)
+    c.countdown = 90
+    c.store = 0
+    this.colonies[planet.def.id] = c
+    this.attachColony(c, planet)
+    this.addTurret(c, planet, this.offsetDir(local, 0.8, 7, R, new Vector3()))
+    this.cleared.add(planet.def.id)
+  }
+
+  private homeColony() {
+    const list = Object.values(this.colonies).filter((c) => this.mine(c))
+    return list.find((c) => c.kind === 'main') ?? list[0] ?? null
+  }
+
+  private planetOf(c: Colony) {
+    if (c.universe !== this.universeId) return null
+    return this.planets.find((p) => p.def.id === c.planetId) ?? null
+  }
+
+  private spawnHomePatrols(n: number) {
+    const home = this.planets.find((p) => p.def.home)
+    const at = home ? home.pos : new Vector3()
+    for (let i = 0; i < n; i++) {
+      const a = (i / Math.max(1, n)) * Math.PI * 2 + Math.random() * 0.6
+      const r = (home ? home.def.radius : 40) + 110 + Math.random() * 70
+      const pos = new Vector3(Math.cos(a) * r, (Math.random() - 0.5) * 30, Math.sin(a) * r).add(at)
+      const fleet = this.spawnFleet(1, 0, pos, 'patrol')
+      fleet.small = true
+      if (home) {
+        fleet.around = home
+        fleet.offset = pos.clone().sub(home.pos)
+      }
+    }
+  }
+
+  /** Ev sisteminde eğitim gemileri 3-5 arasında tutulur. */
+  private keepHomePatrols(dt: number) {
+    if (!this.isHome() || this.layer !== 'ship') return
+    this.homePatrolT -= dt
+    const live = this.fleets.filter((f) => f.small).length + this.enemies.filter((e) => e.alive && e.small).length
+    this.homePatrols = this.fleets.filter((f) => f.small).length
+    if (live >= 3 || this.homePatrolT > 0) return
+    this.homePatrolT = 30
+    this.spawnHomePatrols(1)
+    this.homePatrols++
+  }
+
+  /** Uzaydan bot karakoluna isabet: çekirdeğin canı seviyeyle artar, zırhı hasarı azaltır. */
+  private hitOutpost(shot: Shot) {
+    if (this.layer !== 'ship') return false
+    for (const spot of this.coreSpots) {
+      if (!this.colonies[spot.c.planetId]) continue
+      if (distPointSeg(spot.pos, shot.prev, shot.pos) < 4.6) {
+        this.damageOutpost(spot.c, spot.planet, shot.dmg, spot.pos, spot.up)
+        return true
+      }
+    }
+    return false
+  }
+
+  private damageOutpost(c: Colony, planet: Planet, dmg: number, at: Vector3, up: Vector3) {
+    const real = dmg * coreArmor(c.level)
+    c.hull -= real
+    this.floatDamage(at, Math.max(1, Math.round(real)))
+    this.hitMark = 0.18
+    this.paintCoreBar(c)
+    if (c.hull > 0) return
+    vO2.copy(at).addScaledVector(up, 10)
+    this.spawnBoom(at, 2.4, 0xffa060)
+    this.audio.boom()
+    this.dropLoot(vO2, 30 + c.level * 25, 6)
+    this.baseLost(c, planet, null)
+  }
+
+  /** Bot karakolları yakındaki oyuncu gemisine ateş eder; seviye arttıkça daha sık ve sert. */
+  private updateOutpostGuns(dt: number) {
+    this.coreSpots.length = 0
+    if (this.layer !== 'ship') return
+    for (const c of Object.values(this.colonies)) {
+      if (c.universe !== this.universeId || this.mine(c) || !c.core) continue
+      const planet = this.planetOf(c)
+      if (!planet) continue
+      const up = this.worldDir(c.dir, planet, new Vector3())
+      const pos = this.surfacePos(up, planet, 2.2, new Vector3())
+      this.coreSpots.push({ c, planet, pos, up })
+      const d = pos.distanceTo(this.pos)
+      if (d > 95) continue
+      c.shipCool = (c.shipCool ?? 1.2) - dt
+      if (c.shipCool > 0) continue
+      c.shipCool = Math.max(0.55, 2.4 - 0.3 * c.level)
+      vO1.copy(this.pos).addScaledVector(this.vel, d / 128).sub(pos)
+      vO1.x += (Math.random() - 0.5) * 3
+      vO1.y += (Math.random() - 0.5) * 2
+      vO1.z += (Math.random() - 0.5) * 3
+      if (vO1.lengthSq() < 1e-4) continue
+      vO1.normalize()
+      this.spawnShot(false, pos, vO1, 3 + 2.2 * c.level, 'bolt')
+      this.audio.laser(true)
+    }
+  }
+
+  private hostileNear(reach: number) {
+    for (const l of this.locals) if (l.alive && !l.friendly && l.root.position.distanceTo(this.pos) < reach) return true
+    for (const u of this.units) if (u.alive && this.hostileToPlayer(u.faction) && u.root.position.distanceTo(this.pos) < reach + u.spec.radius) return true
+    return false
+  }
+
+  /** En ucuz açık geliştirmenin fiyatı; hepsi tam ise null. */
+  private cheapestUpgrade() {
+    let best: number | null = null
+    for (const up of UPS) {
+      if (this.up[up.id] >= 5) continue
+      const price = costOf(this.up[up.id])
+      if (best === null || price < best) best = price
+    }
+    return best
+  }
+
+  private canUpgrade() {
+    const price = this.cheapestUpgrade()
+    return price !== null && this.energy >= price
+  }
+
+  /** Gemi geliştirme yalnız yüzeyde, park edilmiş geminin yanında yapılır. */
+  private nearParkedShip(reach = 9) {
+    return this.layer === 'foot' && Boolean(this.footPlanet) && this.pos.distanceTo(this.parkedShip) < reach
+  }
+
+  private openUpgrades() {
+    if (this.mode !== 'map' && this.mode !== 'pause') return
+    if (!this.nearParkedShip()) {
+      if (this.mode === 'pause') this.resume()
+      this.toast(this.layer === 'foot' ? 'Gemine yürü; yanındayken sol tık ya da E ile geliştir.' : 'Gemiyi geliştirmek için bir gezegene in ve gemine dokun.')
+      return
+    }
+    if (this.enemies.some((e) => e.alive)) {
+      this.toast('Savaş sürerken geliştirme yok.')
+      if (this.mode === 'pause') this.resume()
+      return
+    }
+    this.mode = 'upgrade'
+    this.input.exitLock()
+    this.renderUpgrades()
+  }
+
+  private razedLocked(id: string) {
+    const t = this.razed.get(id)
+    return t !== undefined && this.properTime - t < RAZE_LOCK
+  }
+
+  private standingOn(id: string) {
+    return this.layer === 'foot' && this.footPlanet?.def.id === id
+  }
+
+  private freeDefs(uid: UniId, allowHome: boolean) {
+    return UNIVERSES[uid].planets.filter(
+      (d) => d.landable !== false && !d.heat && (allowHome || !d.home) && !this.colonies[d.id] && !this.standingOn(d.id) && !this.razedLocked(d.id),
+    )
+  }
+
+  private botNotice(uid: UniId, msg: string) {
+    if (uid === this.universeId || uid === homeSystem(this.originId)) this.toast(msg)
+  }
+
+  private botFound(def: PlanetDef, uid: UniId, owner: OriginId, level: number) {
+    const c = this.botColony({ def }, owner, level, Math.random, uid)
+    c.countdown = BOT_WAVE_GAP
+    if (uid === this.universeId) {
+      const planet = this.planetOf(c)
+      if (planet) this.attachColony(c, planet)
+    }
+    this.botNotice(uid, `${factionName(owner)} ${def.name} gezegeninde karakol kurdu.`)
+    return c
+  }
+
+  /** Bot zamanlayıcısı: her turda iki tür hamle yapar. */
+  private botEvent() {
+    const factions = ORIGINS.map((o) => o.id).filter((id) => id !== this.originId)
+    for (let k = 0; k < 2; k++) this.botMove(factions[Math.floor(Math.random() * factions.length)])
+  }
+
+  /** Bir türün hamlesi: önce kendi sistemini karakollaştırır, sonra geliştirir, sonra solucan deliğinden baskın yapar. */
+  private botMove(f: OriginId) {
+    const own = Object.values(this.colonies).filter((c) => c.owner === f)
+    if (!own.length) return
+    const home = homeSystem(f)
+    const playerHome = homeSystem(this.originId)
+    const early = this.properTime < HOME_GRACE
+    const atHome = own.filter((c) => c.universe === home)
+    const free = this.freeDefs(home, true)
+    const roll = Math.random()
+    if (atHome.length < 3 && free.length && roll < 0.6) {
+      this.botFound(free[Math.floor(Math.random() * free.length)], home, f, 1)
+      return
+    }
+    const grow = own.filter((c) => c.level < 4 && !this.standingOn(c.planetId)).sort((a, b) => a.level - b.level)
+    if (grow.length && roll < 0.8) {
+      const c = grow[0]
+      c.level++
+      c.hullMax = coreHullMax(c.level)
+      c.hull = c.hullMax
+      const planet = this.planetOf(c)
+      if (planet) this.attachColony(c, planet)
+      this.botNotice(c.universe, `${factionName(f)} ${c.planetName} karakolunu büyüttü (sv ${c.level}).`)
+      return
+    }
+    const from = [...new Set(own.map((c) => c.universe))]
+    const targets = new Set<UniId>()
+    for (const u of from) for (const h of UNIVERSES[u].holes) if (h.kind === 'worm' && h.to) targets.add(h.to)
+    const list = [...targets].filter((u) => !(u === playerHome && early))
+    if (!list.length) return
+    const uid = list[Math.floor(Math.random() * list.length)]
+    const open = this.freeDefs(uid, uid !== playerHome)
+    const victims = Object.values(this.colonies).filter((c) => c.universe === uid && c.owner !== f && !this.mine(c) && !this.standingOn(c.planetId))
+    if (open.length && (!victims.length || Math.random() < 0.5)) {
+      this.botFound(open[Math.floor(Math.random() * open.length)], uid, f, 1)
+      return
+    }
+    if (!victims.length) return
+    const v = victims[Math.floor(Math.random() * victims.length)]
+    const best = own.reduce((m, c) => Math.max(m, c.level * 2 + c.turrets.length), 0)
+    const sa = best + 1
+    const sb = v.level * 2 + v.turrets.length
+    if (Math.random() < sa / (sa + sb)) {
+      this.flipOwner(v, this.planetOf(v), f)
+      this.botNotice(uid, `${factionName(f)} baskınla ${v.planetName} karakolunu ele geçirdi.`)
+    } else v.hull = Math.max(1, v.hull - v.hullMax * 0.3)
+  }
+
+  private accrueIncome(dt: number) {
+    let rate = 0
+    for (const c of Object.values(this.colonies)) {
+      // Nüfus, gezegen yüklü olmasa da seviyeye göre büyür.
+      c.pop = Math.min(settlerCap(c.level, c.turrets.length), c.pop + popGrowth(c.level) * dt)
+      if (!this.mine(c)) continue
+      if (c.kind === 'main') rate += 0.08 + 0.05 * c.level
+      else if (c.founded) rate += 0.14 + 0.02 * c.turrets.length
+    }
+    this.botT -= dt
+    if (this.botT <= 0) {
+      this.botT = BOT_TICK
+      this.botEvent()
+    }
+    if (rate <= 0) return
+    this.incomeAcc += rate * dt
+    if (this.incomeAcc >= 1) {
+      const whole = Math.floor(this.incomeAcc)
+      this.incomeAcc -= whole
+      this.energy += whole
+    }
+  }
+
+  private expose() {
+    const game = this
+    const api = {
+      get mode() {
+        return game.mode
+      },
+      get forceAim() {
+        return game.forceAim
+      },
+      set forceAim(v: boolean) {
+        game.forceAim = v
+      },
+      get autoFire() {
+        return game.autoFire
+      },
+      set autoFire(v: boolean) {
+        game.autoFire = v
+      },
+      snap: () => ({
+        mode: game.mode,
+        fading: game.fading,
+        pos: [game.pos.x, game.pos.y, game.pos.z],
+        speed: game.vel.length(),
+        vis: game.vis,
+        hull: game.hull,
+        shield: game.shield,
+        energy: game.energy,
+        score: game.score,
+        best: game.best,
+        fleets: game.fleets.length,
+        enemies: game.enemies.length,
+        alive: game.enemies.filter((e) => e.alive).length,
+        fragments: game.frags.filter((f) => f.alive).length,
+        tf: game.tf,
+        cam: game.camMode,
+        fps: game.fps,
+        fights: game.fights,
+        kills: game.kills,
+        introT: game.introT,
+        intro: game.dom.introText.textContent,
+        upgrades: { ...game.up },
+        easy: game.save.settings.easy,
+        origin: game.originId,
+        universe: game.universeId,
+        stunned: game.enemies.filter((e) => e.alive && e.stun > 0).length,
+        well: game.wellLife,
+        enemyWells: game.enemyWells.filter((well) => well.alive).length,
+        attacks: game.enemies.map((enemy) => enemy.attack),
+        humans: game.enemies.filter((e) => e.human).length,
+        layer: game.layer,
+        weapon: game.weapon,
+        owned: [...game.owned],
+        home: homeSystem(game.originId),
+        atHome: game.universeId === homeSystem(game.originId),
+        heat: game.heat,
+        regen: game.regenRate(),
+        threat: game.threatMul(),
+        net: document.getElementById('netmap')?.textContent ?? '',
+        ys: game.planets.map((p) => Math.round(p.pos.y)),
+        power: game.powerT,
+        footAlt: game.footAlt,
+        planets: game.planets.map((p) => ({ id: p.def.id, kind: p.def.kind, name: p.def.name, landable: p.def.landable !== false && !p.def.heat })),
+        worms: game.holes.filter((h) => h.kind === 'worm').map((h) => h.to),
+        pois: game.pois.length,
+        giants: game.enemies.filter((e) => e.alive && e.giant).length,
+        giantHull: Math.max(0, ...game.enemies.filter((e) => e.giant).map((e) => e.hullMax)),
+        normalHull: Math.max(0, ...game.enemies.filter((e) => !e.giant).map((e) => e.hullMax), 0),
+        bars: game.enemies.filter((e) => e.giant && e.bar).length,
+        gates: game.enemyGates.filter((g) => g.alive).length,
+        colonies: Object.values(game.colonies).map((c) => ({
+          id: c.planetId,
+          kind: c.kind,
+          level: c.level,
+          hull: c.hull,
+          hullMax: c.hullMax,
+          wave: c.wave,
+          state: c.state,
+          founded: c.founded,
+          turrets: c.turrets.length,
+          countdown: c.countdown,
+        })),
+        invaders: game.units.filter((i) => i.alive && i.invader).length,
+        settlers: game.units.filter((i) => i.alive && !i.invader).length,
+        pops: Object.values(game.colonies).map((c) => ({ id: c.planetId, owner: c.owner, level: c.level, pop: c.pop, cap: settlerCap(c.level, c.turrets.length) })),
+        walkerLook: game.walkerLook,
+        locals: game.locals.filter((l) => l.alive).length,
+        queued: Object.values(game.colonies).reduce((n, c) => n + c.queue.length, 0),
+        bestWave: game.save.bestWave,
+        skirmish: game.skirmish,
+        enemyHulls: game.enemies.map((e) => (e.alive ? Math.round(e.hull + e.shield) : -1)),
+        enemiesAlive: game.enemies.filter((e) => e.alive).length,
+        smallEnemies: game.enemies.filter((e) => e.alive && e.small).length,
+        loot: game.loot.filter((l) => l.alive).length,
+        smallFleets: game.fleets.filter((f) => f.small).length,
+        fleetCount: game.fleets.length,
+        homeColony: (() => {
+          const c = game.homeColony()
+          return c ? { id: c.planetId, universe: c.universe, level: c.level, store: c.store ?? 0, kind: c.kind, pop: c.pop } : null
+        })(),
+        startPlanet: game.planets.find((p) => p.def.home)?.def.id ?? null,
+        distHome: (() => {
+          const p = game.planets.find((x) => x.def.home)
+          return p ? p.pos.distanceTo(game.pos) - p.def.radius : -1
+        })(),
+        properTime: game.properTime,
+      }),
+      worldColonies: () =>
+        Object.values(game.colonies).map((c) => ({
+          id: c.planetId,
+          owner: c.owner,
+          universe: c.universe,
+          level: c.level,
+          hull: c.hull,
+          hullMax: c.hullMax,
+          kind: c.kind,
+          mine: game.mine(c),
+          home: Boolean(UNIVERSES[c.universe].planets.find((d) => d.id === c.planetId)?.home),
+        })),
+      homeOf: (id: OriginId) => homeSystem(id),
+      origins: () => ORIGINS.map((o) => o.id),
+      botTick: (n = 1) => {
+        for (let i = 0; i < n; i++) game.botEvent()
+        return Object.values(game.colonies).filter((c) => !game.mine(c)).length
+      },
+      addTime: (sec: number) => {
+        game.properTime += sec
+      },
+      collectLoot: (v: number) => game.collectLoot(v),
+      lootPositions: () => game.loot.filter((l) => l.alive).map((l) => l.pos.distanceTo(game.pos)),
+      stepMap: (n: number, dt = 1 / 60) => {
+        for (let i = 0; i < n; i++) game.updateMap(dt)
+        return game.mode
+      },
+      shootOutpost: (id: string, dmg: number) => {
+        game.updateOutpostGuns(0)
+        const spot = game.coreSpots.find((s) => s.c.planetId === id)
+        if (!spot) return null
+        game.damageOutpost(spot.c, spot.planet, dmg, spot.pos, spot.up)
+        const c = game.colonies[id]
+        return c ? { hull: c.hull, hullMax: c.hullMax, alive: true } : { hull: 0, hullMax: 0, alive: false }
+      },
+      flyTo: (id: string, alt = 30) => {
+        const planet = game.planets.find((p) => p.def.id === id)
+        if (!planet) return false
+        game.fadeToken++
+        game.fading = false
+        game.dom.fade.classList.remove('on')
+        game.mode = 'map'
+        game.layer = 'ship'
+        game.footPlanet = null
+        const c = game.colonies[id]
+        const up = c ? game.worldDir(c.dir, planet, new Vector3()) : new Vector3(0, 1, 0)
+        game.pos.copy(planet.pos).addScaledVector(up, planet.def.radius + alt)
+        game.vel.set(0, 0, 0)
+        quatFromForward(game.quat, vA.copy(planet.pos).sub(game.pos).normalize())
+        game.visual.root.position.copy(game.pos)
+        game.visual.root.quaternion.copy(game.quat)
+        game.snapCamera = true
+        game.applyPresentation()
+        return true
+      },
+      razedLocked: (id: string) => game.razedLocked(id),
+      gotoLoot: () => {
+        const l = game.loot.find((x) => x.alive)
+        if (!l) return false
+        game.pos.copy(l.pos).add(new Vector3(0, 0, 20))
+        game.vel.set(0, 0, 0)
+        return true
+      },
+      colonyPop: (id: string) => {
+        const c = game.colonies[id]
+        return c ? { pop: c.pop, cap: settlerCap(c.level, c.turrets.length), level: c.level, store: c.store ?? 0 } : null
+      },
+      locals: () => game.locals.filter((l) => l.alive).length,
+      planetPos: (id: string) => {
+        const planet = game.planets.find((p) => p.def.id === id)
+        return planet ? { x: planet.pos.x, y: planet.pos.y, z: planet.pos.z, r: planet.def.radius, landable: planet.def.landable !== false && !planet.def.heat } : null
+      },
+      stepWorld: (n: number, dt = 1 / 60) => {
+        for (let i = 0; i < n && game.mode === 'map'; i++) {
+          game.clockT += dt
+          game.updateMap(dt)
+        }
+        return { alive: game.enemies.filter((e) => e.alive).length, fleets: game.fleets.length, layer: game.layer }
+      },
+      localsDebug: () => game.locals.map((l) => ({ alive: l.alive, hull: l.hull, friendly: l.friendly, d: Math.round(l.root.position.distanceTo(game.pos) * 100) / 100 })),
+      steerProbe: (mouseY: number, frames: number, easy: boolean) => {
+        const was = game.save.settings.easy
+        game.save.settings.easy = easy
+        game.mode = 'map'
+        game.layer = 'ship'
+        game.holdPose = false
+        const fwd = new Vector3()
+        const up0 = new Vector3()
+        const up1 = new Vector3()
+        let maxRoll = 0
+        let camFlip = 0
+        shipUp(game.quat, up0)
+        for (let i = 0; i < frames; i++) {
+          game.input.mouseY = mouseY
+          game.steer(1 / 60)
+          game.input.mouseY = 0
+          game.updateCamera(1 / 60)
+          shipForward(game.quat, fwd)
+          shipUp(game.quat, up1)
+          // yuvarlanma değişimi: önceki "yukarı"nın ileri eksen etrafındaki dönüşü
+          const a = up0.clone().addScaledVector(fwd, -up0.dot(fwd))
+          if (a.lengthSq() > 1e-8) {
+            a.normalize()
+            const roll = Math.acos(Math.max(-1, Math.min(1, a.dot(up1)))) * 57.3
+            maxRoll = Math.max(maxRoll, roll)
+          }
+          if (game.camera.up.dot(up1) < 0) camFlip++
+          up0.copy(up1)
+        }
+        game.save.settings.easy = was
+        shipForward(game.quat, fwd)
+        return { maxRollDegPerFrame: Math.round(maxRoll * 100) / 100, cameraUpsideDownFrames: camFlip, noseY: Math.round(fwd.y * 1000) / 1000 }
+      },
+      routeNextGate: () => (game.route ? game.nextGate(game.universeId, game.route.system) : null),
+      hops: (goal: UniId, from?: UniId) => game.hopsTo(goal, from ?? game.universeId),
+      cruise: () => Math.round(game.openCap()),
+      gates: () => Object.fromEntries((Object.keys(UNIVERSES) as UniId[]).map((id) => [id, UNIVERSES[id].holes.filter((h) => h.kind === 'worm').map((h) => h.to)])),
+      radarMode: () => game.radarMode,
+      toggleRadar: () => game.toggleRadar(),
+      routeHome: () => game.routeHome(),
+      villageLife: (id: string) => {
+        const planet = game.planets.find((p) => p.def.id === id)
+        const rigs = (planet?.village?.userData.rigs as Rig[] | undefined) ?? []
+        return { rigs: rigs.length, visible: rigs.filter((r) => r.root.visible).length }
+      },
+      shipGap: () => {
+        const planet = game.footPlanet
+        if (!planet) return null
+        return { surface: game.parkedShip.distanceTo(planet.pos) - planet.def.radius, walker: game.parkedShip.distanceTo(game.pos), visual: game.visual.root.position.distanceTo(game.parkedShip) }
+      },
+      fleetAlt: () => {
+        const planet = game.footPlanet
+        if (!planet) return null
+        return game.fleets.map((f) => f.pos.distanceTo(planet.pos) - planet.def.radius)
+      },
+      skyOnCamera: () => game.sky.position.distanceTo(game.camera.position) < 1e-6,
+      mapLimit: () => game.mapLimit,
+      landOnId: (id: string) => {
+        const planet = game.planets.find((p) => p.def.id === id)
+        if (!planet) return false
+        game.fadeToken++
+        game.fading = false
+        game.ending = false
+        game.dom.fade.classList.remove('on')
+        game.mode = 'map'
+        game.layer = 'ship'
+        game.holdPose = false
+        game.pos.copy(planet.pos).add(new Vector3(0, planet.def.radius + 14, 0))
+        game.vel.set(0, 0, 0)
+        game.applyPresentation()
+        return game.land()
+      },
+      giveEnergy: (n: number) => {
+        game.energy += n
+      },
+      setLevel: (level: number, fillPop = true) => {
+        const c = game.colonyHere()
+        const planet = game.footPlanet
+        if (!c || !planet) return false
+        c.level = level
+        c.hullMax = coreHullMax(level)
+        c.hull = c.hullMax
+        if (fillPop) c.pop = settlerCap(level, c.turrets.length)
+        game.attachColony(c, planet)
+        return true
+      },
+      botColonies: () =>
+        Object.values(game.colonies)
+          .filter((c) => !game.mine(c))
+          .map((c) => ({ id: c.planetId, owner: c.owner, level: c.level, turrets: c.turrets.length, universe: c.universe })),
+      conquer: () => {
+        const planet = game.footPlanet
+        const c = game.colonyHere()
+        if (!planet || !c || game.mine(c)) return false
+        const R = planet.def.radius
+        for (let i = 0; i < 400 && game.colonyHere(); i++) {
+          const core = game.worldDir(c.dir, planet, new Vector3())
+          const d = game.offsetDir(core, 0.7, 4.6, R, new Vector3())
+          game.pos.copy(planet.pos).addScaledVector(d, R + game.footAlt)
+          game.footForward.copy(core).addScaledVector(d, -d.dot(core)).normalize()
+          game.hull = 100
+          game.shield = 52
+          game.punchCd = 0
+          game.input.mouseDown = true
+          game.updateFoot(1 / 60)
+          game.input.mouseDown = false
+        }
+        return !game.colonyHere()
+      },
+      foundBase: () => game.foundBase(),
+      squadAction: () => game.squadAction(),
+      landHere: () => game.land(),
+      squadInfo: () => {
+        const ground = game.units.filter((u) => u.alive && u.squad)
+        const c = game.colonyHere()
+        return {
+          ship: game.squad.length,
+          ground: ground.length,
+          heroes: (game.layer === 'ship' ? game.squad.map((m) => m.kind) : ground.map((u) => u.kind)).filter((k) => isHero(k)).length,
+          escorts: game.escorts.length,
+          escortGap: game.escorts.length ? Math.round(Math.max(...game.escorts.map((e) => e.position.distanceTo(game.pos)))) : 0,
+          invader: ground.some((u) => u.invader),
+          colony: c ? { owner: c.owner, mine: game.mine(c), pop: c.pop, hull: c.hull, units: game.units.filter((u) => u.alive && u.colonyId === c.planetId && !u.invader).length } : null,
+          locals: game.locals.filter((l) => l.alive).length,
+          ready: document.body.classList.contains('squad-ready'),
+          chip: document.getElementById('squad-flag')?.textContent ?? '',
+        }
+      },
+      toShip: () => {
+        const planet = game.footPlanet
+        if (!planet) return false
+        const d = new Vector3().copy(game.parkedShip).sub(planet.pos).normalize()
+        game.pos.copy(planet.pos).addScaledVector(d, planet.def.radius + game.footAlt)
+        return true
+      },
+      toCore: (gap = 5) => {
+        const planet = game.footPlanet
+        const c = game.colonyHere()
+        if (!planet || !c) return false
+        const core = game.worldDir(c.dir, planet, new Vector3())
+        const d = game.offsetDir(core, 0.7, gap, planet.def.radius, new Vector3())
+        game.pos.copy(planet.pos).addScaledVector(d, planet.def.radius + game.footAlt)
+        return true
+      },
+      weakenCore: (hull: number) => {
+        const c = game.colonyHere()
+        if (!c) return false
+        c.hull = Math.min(c.hull, hull)
+        return true
+      },
+      wildPlanet: () => {
+        const p = game.planets.find((x) => x.def.landable !== false && !x.def.heat && !game.colonies[x.def.id] && !game.cleared.has(x.def.id) && !x.def.home)
+        return p ? p.def.id : null
+      },
+      placeTurret: () => game.placeTurret(),
+      baseAction: () => game.baseAction(),
+      callWave: () => game.callWave(),
+      stepGround: (n: number, dt = 1 / 60) => {
+        for (let i = 0; i < n; i++) {
+          game.clockT += dt
+          game.updatePlanets(dt)
+          if (game.layer === 'foot') game.updateFoot(dt)
+          // Gerçek döngüdeki gibi: nüfus büyümesi ve koloni geliri accrueIncome'da işler.
+          game.accrueIncome(dt)
+        }
+        return { hull: game.hull, shield: game.shield, alive: game.units.filter((x) => x.alive && game.hostileToPlayer(x.faction)).length }
+      },
+      faceNearest: () => {
+        const planet = game.footPlanet
+        if (!planet) return 0
+        let best: Vector3 | null = null
+        let bd = 1e9
+        for (const i of game.units) {
+          if (!i.alive || !game.hostileToPlayer(i.faction)) continue
+          const d = i.root.position.distanceTo(game.pos)
+          if (d < bd) {
+            bd = d
+            best = i.dir
+          }
+        }
+        if (!best) return 0
+        vA.copy(game.pos).sub(planet.pos).normalize()
+        game.footForward.copy(best).addScaledVector(vA, -vA.dot(best))
+        if (game.footForward.lengthSq() < 1e-9) return bd
+        game.footForward.normalize()
+        return bd
+      },
+      approachLocal: (gap = 2) => {
+        const planet = game.footPlanet
+        const l = game.locals.find((x) => x.alive)
+        if (!planet || !l) return false
+        const R = planet.def.radius
+        const side = new Vector3().crossVectors(l.home, AXIS_X)
+        if (side.lengthSq() < 1e-6) side.crossVectors(l.home, AXIS_Y)
+        side.normalize()
+        const phi = gap / R
+        const d = l.home.clone().multiplyScalar(Math.cos(phi)).addScaledVector(side, Math.sin(phi)).normalize()
+        game.pos.copy(planet.pos).addScaledVector(d, R + game.footAlt)
+        game.footForward.copy(l.home).addScaledVector(d, -d.dot(l.home)).normalize()
+        return true
+      },
+      punch: () => {
+        game.punchCd = 0
+        game.input.mouseDown = true
+        game.updateFoot(1 / 60)
+        game.input.mouseDown = false
+        return game.units.filter((x) => x.alive && game.hostileToPlayer(x.faction)).length
+      },
+      groundOverlap: () => {
+        const planet = game.footPlanet
+        if (!planet) return 0
+        const pts: { p: Vector3; r: number }[] = [{ p: game.pos.clone(), r: 0.8 }]
+        for (const l of game.locals) if (l.alive) pts.push({ p: l.root.position.clone(), r: 0.8 })
+        for (const i of game.units) if (i.alive) pts.push({ p: i.root.position.clone(), r: i.spec.radius })
+        let worst = 0
+        for (let a = 0; a < pts.length; a++) {
+          for (let b = a + 1; b < pts.length; b++) {
+            const gap = pts[a].p.distanceTo(pts[b].p)
+            worst = Math.max(worst, pts[a].r + pts[b].r - gap)
+          }
+        }
+        return worst
+      },
+      landOn: (kind: 'small' | 'large') => {
+        const planet = game.planets.find((p) => p.def.kind === kind)
+        if (!planet) return false
+        game.fadeToken++
+        game.fading = false
+        game.ending = false
+        game.dom.fade.classList.remove('on')
+        game.mode = 'map'
+        game.layer = 'ship'
+        game.holdPose = false
+        game.pos.copy(planet.pos).add(new Vector3(0, planet.def.radius + 14, 0))
+        game.vel.set(0, 0, 0)
+        game.applyPresentation()
+        return game.land()
+      },
+      board: () => game.board(),
+      measureHop: (kind: 'small' | 'large') => {
+        const planet = game.planets.find((p) => p.def.kind === kind)
+        if (!planet) return 0
+        game.mode = 'map'
+        game.layer = 'ship'
+        game.holdPose = false
+        game.pos.copy(planet.pos).add(new Vector3(0, planet.def.radius + 14, 0))
+        game.vel.set(0, 0, 0)
+        if (!game.land()) return 0
+        game.jumpBuf = planet.def.jump
+        let peak = game.footAlt
+        for (let i = 0; i < 480; i++) {
+          game.updateFoot(1 / 60)
+          peak = Math.max(peak, game.footAlt)
+          if (i > 8 && game.grounded) break
+        }
+        return peak
+      },
+      walk: (sec: number) => {
+        const planet = game.footPlanet
+        if (!planet) return { angle: 0, alt: 0 }
+        const start = game.pos.clone().sub(planet.pos).normalize()
+        game.input.keys.add('KeyW')
+        const steps = Math.max(1, Math.round(sec * 60))
+        for (let i = 0; i < steps; i++) game.updateFoot(1 / 60)
+        game.input.keys.delete('KeyW')
+        const end = game.pos.clone().sub(planet.pos).normalize()
+        const dot = clamp(start.dot(end), -1, 1)
+        return { angle: Math.acos(dot), alt: game.pos.distanceTo(planet.pos) - planet.def.radius, pois: game.pois.length }
+      },
+      setVitals: (hull: number, shield: number, cd1: number, cd2: number) => {
+        game.hull = hull
+        game.shield = shield
+        game.cd1 = cd1
+        game.cd2 = cd2
+      },
+      cycle: () => game.cycleWeapon(),
+      setMobile: (on: boolean) => {
+        game.mobileCam = on
+      },
+      simChase: () => {
+        game.mode = 'map'
+        game.layer = 'ship'
+        game.camMode = 'chase'
+        game.holdPose = true
+        game.pos.set(30, 16, 40)
+        game.vel.set(0, 0, -200)
+        quatFromForward(game.quat, vA.set(0, 0, -1))
+        game.visual.root.position.copy(game.pos)
+        game.visual.root.quaternion.copy(game.quat)
+        game.snapCamera = true
+        const step = (n: number) => {
+          for (let i = 0; i < n; i++) {
+            game.pos.addScaledVector(game.vel, 1 / 60)
+            game.visual.root.position.copy(game.pos)
+            game.updateCamera(1 / 60)
+          }
+        }
+        step(50)
+        qA.setFromAxisAngle(AXIS_Y, 1.5)
+        game.quat.multiply(qA)
+        game.vel.set(0, 0, -1).applyQuaternion(game.quat).multiplyScalar(200)
+        step(36)
+        game.camera.updateMatrixWorld(true)
+        const ndc = game.pos.clone().project(game.camera)
+        return { x: ndc.x, y: ndc.y, z: ndc.z, dist: game.camera.position.distanceTo(game.pos) }
+      },
+      simGiant: () => {
+        const giant = game.enemies.find((e) => e.alive && e.giant)
+        if (!giant) return null
+        game.camMode = 'chase'
+        game.layer = 'ship'
+        shipForward(game.quat, vA)
+        giant.pos.copy(game.pos).addScaledVector(vA, 7)
+        giant.root.position.copy(giant.pos)
+        game.vel.copy(vA).multiplyScalar(150)
+        game.snapCamera = true
+        for (let i = 0; i < 36; i++) {
+          game.pos.addScaledVector(game.vel, 1 / 60)
+          giant.pos.addScaledVector(game.vel, 1 / 60)
+          giant.root.position.copy(giant.pos)
+          game.visual.root.position.copy(game.pos)
+          game.updateCamera(1 / 60)
+        }
+        game.camera.updateMatrixWorld(true)
+        const ndc = game.pos.clone().project(game.camera)
+        return { x: ndc.x, y: ndc.y, z: ndc.z, dist: game.camera.position.distanceTo(game.pos) }
+      },
+      strike: (where: 'body' | 'weak') => {
+        const pool = game.enemies.filter((e) => e.alive && e.giant)
+        const e = where === 'weak' ? pool[0] : pool[1]
+        if (!e) return 0
+        for (const s of game.shots) if (s.alive) game.killShot(s)
+        const before = e.hull + e.shield
+        const shot = game.shots.find((s) => !s.alive && s.friendly)
+        if (!shot) return 0
+        shot.alive = true
+        shot.kind = 'laser'
+        shot.dmg = 12
+        shot.hops = 1
+        shot.age = 0.12
+        shot.vel.set(0, 0, 0)
+        if (where === 'weak' && e.weak) {
+          e.root.position.copy(e.pos)
+          e.root.updateWorldMatrix(true, true)
+          e.weak.getWorldPosition(shot.pos)
+        } else shot.pos.copy(e.pos)
+        shot.prev.copy(shot.pos)
+        shot.mesh.visible = false
+        game.updateShots(0.016)
+        return before - (e.hull + e.shield)
+      },
+      dropEnemyGate: () => {
+        const enemy = game.enemies.find((item) => item.alive && item.attack === 'gate') ?? game.enemies.find((item) => item.alive)
+        if (!enemy) return null
+        game.openEnemyGate(enemy)
+        const gate = game.enemyGates.find((item) => item.alive)
+        if (!gate) return null
+        return { to: gate.to, x: gate.pos.x, y: gate.pos.y, z: gate.pos.z }
+      },
+      swallowGate: () => {
+        const gate = game.enemyGates.find((item) => item.alive && item.owner?.alive)
+        if (!gate?.owner) return false
+        gate.owner.pos.copy(gate.pos)
+        const owner = gate.owner
+        game.updateGates(0.05)
+        return !owner.alive
+      },
+      enterGate: () => {
+        const gate = game.enemyGates.find((item) => item.alive)
+        if (!gate) return false
+        game.pos.copy(gate.pos)
+        game.vel.set(0, 0, 0)
+        game.holdPose = false
+        game.updateGates(0.05)
+        return gate.to
+      },
+      framePlanet: (kind: 'small' | 'large') => {
+        const planet = game.planets.find((p) => p.def.kind === kind)
+        if (!planet) return false
+        game.mode = 'map'
+        game.layer = 'ship'
+        game.holdPose = true
+        game.camMode = 'chase'
+        vA.set(0.15, 0.92, 0.35).normalize()
+        game.pos.copy(planet.pos).addScaledVector(vA, planet.def.radius + (kind === 'large' ? 78 : 26))
+        game.vel.set(0, 0, 0)
+        vB.subVectors(planet.pos, game.pos).normalize()
+        quatFromForward(game.quat, vB)
+        game.visual.root.position.copy(game.pos)
+        game.visual.root.quaternion.copy(game.quat)
+        game.snapCamera = true
+        game.applyPresentation()
+        game.updateCamera(1)
+        return true
+      },
+      frameWorm: () => {
+        const worm = game.holes.find((h) => h.kind === 'worm')
+        if (!worm) return false
+        game.mode = 'map'
+        game.layer = 'ship'
+        game.holdPose = true
+        game.camMode = 'chase'
+        game.pos.copy(worm.pos).add(new Vector3(0, 8, 28))
+        game.vel.set(0, 0, 0)
+        vB.subVectors(worm.pos, game.pos).normalize()
+        quatFromForward(game.quat, vB)
+        game.visual.root.position.copy(game.pos)
+        game.visual.root.quaternion.copy(game.quat)
+        game.snapCamera = true
+        game.applyPresentation()
+        game.updateCamera(1)
+        game.refreshHud()
+        return worm.to ?? null
+      },
+      grant: (n: number) => {
+        game.addScore(n)
+        return [...game.owned]
+      },
+      heatPulse: (seconds: number) => {
+        game.layoutUniverse('gunes')
+        game.mode = 'map'
+        game.layer = 'ship'
+        game.holdPose = true
+        const sun = game.planets.find((p) => p.def.heat)
+        if (!sun) return null
+        game.pos.copy(sun.pos).add(new Vector3(0, sun.def.radius + 70, 0))
+        game.vel.set(0, 0, 0)
+        game.hull = 100
+        game.shield = 60
+        const before = game.hull + game.shield
+        const steps = Math.round(seconds * 60)
+        for (let i = 0; i < steps; i++) game.applyHeat(1 / 60)
+        return { loss: before - (game.hull + game.shield), hull: game.hull, shield: game.shield, heat: game.heat }
+      },
+      landId: (id: string) => {
+        game.layoutUniverse(game.universeId)
+        const planet = game.planets.find((p) => p.def.id === id)
+        if (!planet) return false
+        game.fadeToken++
+        game.fading = false
+        game.mode = 'map'
+        game.layer = 'ship'
+        game.holdPose = false
+        game.pos.copy(planet.pos).add(new Vector3(0, planet.def.radius + 20, 8))
+        game.vel.set(0, 0, 0)
+        game.applyPresentation()
+        return game.land()
+      },
+      frameBody: (id: string) => {
+        const planet = game.planets.find((p) => p.def.id === id)
+        if (!planet) return false
+        game.mode = 'map'
+        game.layer = 'ship'
+        game.holdPose = true
+        game.camMode = 'chase'
+        vA.set(0.2, 0.72, 0.55).normalize()
+        game.pos.copy(planet.pos).addScaledVector(vA, planet.def.radius * 1.85)
+        game.vel.set(0, 0, 0)
+        vB.subVectors(planet.pos, game.pos).normalize()
+        quatFromForward(game.quat, vB)
+        game.visual.root.position.copy(game.pos)
+        game.visual.root.quaternion.copy(game.quat)
+        game.snapCamera = true
+        game.applyPresentation()
+        game.updateCamera(1)
+        game.refreshHud()
+        return true
+      },
+      frameSolar: () => {
+        game.layoutUniverse('gunes')
+        game.mode = 'map'
+        game.layer = 'ship'
+        game.holdPose = true
+        game.camMode = 'chase'
+        const earth = game.planets.find((p) => p.def.id === 'dunya')
+        const focus = earth ? earth.pos : new Vector3()
+        game.pos.copy(focus).add(new Vector3(-900, 1400, 1300))
+        game.vel.set(0, 0, 0)
+        vB.copy(focus).sub(game.pos).normalize()
+        quatFromForward(game.quat, vB)
+        game.visual.root.position.copy(game.pos)
+        game.visual.root.quaternion.copy(game.quat)
+        game.snapCamera = true
+        game.applyPresentation()
+        game.updateCamera(1)
+        game.refreshHud()
+        return true
+      },
+      rig: () => ({
+        legL: game.walkerRig.legL.rotation.x,
+        legR: game.walkerRig.legR.rotation.x,
+        armL: game.walkerRig.armL.rotation.x,
+        armR: game.walkerRig.armR.rotation.x,
+      }),
+      snapCam: () => {
+        game.snapCamera = true
+        game.updateCamera(1)
+      },
+      faceDot: () => {
+        const forward = new Vector3(0, 0, 1).applyQuaternion(game.walker.quaternion)
+        return forward.dot(game.footForward.clone().normalize())
+      },
+      behind: () => {
+        const back = game.footForward.clone().negate().normalize()
+        const off = game.camera.position.clone().sub(game.walker.position).normalize()
+        return off.dot(back)
+      },
+      anchorY: (id: string) => {
+        const planet = game.planets.find((p) => p.def.id === id)
+        return planet ? planet.pos.y : null
+      },
+      spinPlanets: (steps: number) => {
+        const before = game.planets.find((p) => p.def.kind === 'small')
+        const y0 = before ? before.anchor.y : 0
+        const p0 = before ? before.pos.clone() : new Vector3()
+        for (let i = 0; i < steps; i++) {
+          game.clockT += 1 / 60
+          game.updatePlanets(1 / 60)
+        }
+        const after = game.planets.find((p) => p.def.kind === 'small')
+        return { y: after?.pos.y ?? 0, y0, drift: after ? after.pos.distanceTo(p0) : 0, anchor: y0 }
+      },
+      beacons: () => document.querySelectorAll('#beacons .beacon').length,
+      setRoute: (id: string) => {
+        game.route = { kind: 'planet', id, system: game.universeId }
+        game.paintRoute()
+        return game.routeLine.visible
+      },
+      routeOn: () => game.routeLine.visible,
+      punchPose: () => {
+        game.punchT = 0.18
+        game.poseWalker()
+        return game.walkerRig.armR.rotation.x
+      },
+      ambushNow: () => {
+        const before = game.fleets.length
+        game.raiseAmbush()
+        return game.fleets.length > before
+      },
+      showTouch: (on: boolean) => {
+        document.body.classList.toggle('force-touch', on)
+      },
+      pressAct: (name: 'land' | 'jump' | 'punch' | 'weapon', on: boolean) => {
+        if (name === 'land') game.input.touchLand = on
+        if (name === 'jump') game.input.touchJump = on
+        if (name === 'punch') game.input.touchPunch = on
+        if (name === 'weapon') game.input.touchWeapon = on
+      },
+      pick: (id: OriginId) => {
+        game.showShip(id)
+        if (game.mode === 'select') game.renderSelect()
+      },
+      confirm: () => game.startRun(),
+      cast: (slot: 1 | 2) => game.tryAbility(slot),
+      jump: (id: UniId) => game.transit(id),
+      dropEnemyWell: () => {
+        const enemy = game.enemies.find((item) => item.alive)
+        if (!enemy) return false
+        const slot = game.enemyWells.find((well) => !well.alive) ?? game.enemyWells[0]
+        slot.owner = enemy
+        slot.pos.copy(enemy.pos)
+        slot.life = 3.4
+        slot.alive = true
+        slot.mesh.visible = true
+        slot.mesh.position.copy(slot.pos)
+        return true
+      },
+      parkPlayerInOwnWell: () => {
+        game.wellPos.copy(game.pos)
+        game.wellLife = 4.6
+        game.wellMesh.visible = true
+        game.wellMesh.position.copy(game.wellPos)
+      },
+      skipIntro: () => game.skipIntro(),
+      start: () => game.startRun(),
+      setIntroTime: (t: number) => {
+        game.mode = 'intro'
+        game.introT = 0
+        game.lineShown = -1
+        game.bangPlayed = true
+        game.resetIntroParticles()
+        game.diskMat.uniforms.uAlpha.value = 0
+        while (game.introT < t - 0.001) game.updateIntro(Math.min(0.05, t - game.introT))
+        game.applyPresentation()
+      },
+      place: (x: number, y: number, z: number) => {
+        game.fadeToken++
+        game.fading = false
+        game.ending = false
+        game.dom.fade.classList.remove('on')
+        game.holdPose = true
+        game.mode = 'map'
+        game.pos.set(x, y, z)
+        game.vel.set(0, 0, 0)
+        game.faceOrigin()
+        game.visual.root.position.copy(game.pos)
+        game.visual.root.quaternion.copy(game.quat)
+        game.snapCamera = true
+        game.mapRoot.visible = true
+        game.combatRoot.visible = false
+        game.hideControls()
+        game.dom.toast.textContent = ''
+        game.dom.prompt.textContent = ''
+        game.toastT = 0
+        game.applyPresentation()
+      },
+      hold: (on: boolean) => {
+        game.holdPose = on
+      },
+      faceOrigin: () => game.faceOrigin(),
+      setVis: (v: number) => {
+        game.vis = v
+      },
+      engage: () => {
+        if (game.mode !== 'map') {
+          game.mode = 'map'
+          game.applyPresentation()
+        }
+        if (game.layer !== 'ship') game.board()
+        shipForward(game.quat, vA)
+        const fleet = game.spawnFleet(3, 2, game.pos.clone().addScaledVector(vA, 60), 'hunt')
+        game.beginCombat(fleet)
+      },
+      engageNearest: () => {
+        const near = game.nearestFleet(10000)
+        if (!near) return false
+        const small = Boolean(near.fleet.small)
+        game.beginCombat(near.fleet)
+        return small
+      },
+      damage: (n: number) => game.hurtPlayer(n),
+      wipe: () => {
+        for (const e of game.enemies) if (e.alive) game.hurtEnemy(e, 9999)
+      },
+      setCam: (m: CamMode) => {
+        game.camMode = m
+        game.snapCamera = true
+        game.applyPresentation()
+      },
+      arrange: () => {
+        const spots = [
+          [0, 2, -34],
+          [-14, 5, -46],
+          [13, -2, -40],
+        ]
+        const base = game.pos.clone()
+        game.enemies.forEach((e, i) => {
+          const s = spots[i % spots.length]
+          e.pos.set(s[0], s[1] - 0.4, s[2] - 18).add(base)
+          e.vel.set(0, 0, 0)
+          e.alive = true
+          e.root.visible = true
+        })
+        game.pos.copy(base)
+        game.vel.set(0, 0, -6)
+        game.quat.identity()
+        game.visual.root.position.copy(game.pos)
+        game.visual.root.quaternion.copy(game.quat)
+        game.enemies.forEach((e) => {
+          quatFromForward(e.quat, vA.set(0, 0, 1))
+          e.root.position.copy(e.pos)
+          e.root.quaternion.copy(e.quat)
+        })
+        game.holdPose = true
+        game.snapCamera = true
+      },
+      volley: () => {
+        shipForward(game.quat, vA)
+        for (let i = 0; i < 4; i++) {
+          vB.copy(game.pos).addScaledVector(vA, 6 + i * 6)
+          game.spawnShot(true, vB, vA, 15)
+        }
+      },
+    }
+    ;(window as unknown as { __sessiz: typeof api }).__sessiz = api
+  }
+
+  private faceOrigin() {
+    if (this.pos.lengthSq() < 1) return
+    vA.copy(this.pos).negate().normalize()
+    quatFromForward(this.quat, vA)
+    this.visual.root.quaternion.copy(this.quat)
+  }
+}
+
+export function boot() {
+  const game = new Game()
+  game.start()
+  return game
+}
