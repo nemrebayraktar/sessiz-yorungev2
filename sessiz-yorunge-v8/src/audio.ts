@@ -64,6 +64,7 @@ export class AudioBus {
       bp.type = 'bandpass'
       bp.frequency.value = 160
       bp.Q.value = 0.65
+      this.thrustFilter = bp
       this.thrustGain = ctx.createGain()
       this.thrustGain.gain.value = 0
       src.connect(bp)
@@ -82,8 +83,11 @@ export class AudioBus {
     this.master.gain.setTargetAtTime(0.42 * v, this.ctx.currentTime, 0.05)
   }
 
+  private thrustFilter: BiquadFilterNode | null = null
+
   setThrust(amount: number) {
     if (!this.thrustGain || !this.ctx) return
+    if (this.thrustFilter) this.thrustFilter.frequency.setTargetAtTime(this.engineHz * (1 + amount * 0.8), this.ctx.currentTime, 0.1)
     const g = Math.max(0, Math.min(1, amount)) * 0.16 * this.volume
     this.thrustGain.gain.setTargetAtTime(g, this.ctx.currentTime, 0.08)
   }
@@ -124,6 +128,12 @@ export class AudioBus {
     this.tone(880, 0.12, 0.07, 'sine', 0.045)
   }
 
+  quest() {
+    this.tone(523, 0.12, 0, 'triangle', 0.05)
+    this.tone(659, 0.12, 0.1, 'triangle', 0.05)
+    this.tone(784, 0.22, 0.2, 'triangle', 0.06)
+  }
+
   ui() {
     this.tone(540, 0.045, 0, 'sine', 0.04)
   }
@@ -153,12 +163,266 @@ export class AudioBus {
     this.tone(78, 0.42, 0, 'sine', 0.08)
   }
 
-  hit(shield: boolean) {
-    this.tone(shield ? 420 : 140, shield ? 0.08 : 0.14, 0, shield ? 'triangle' : 'sawtooth', shield ? 0.04 : 0.06)
+  hit(shield: boolean, gain = 1) {
+    this.tone(shield ? 420 : 140, shield ? 0.08 : 0.14, 0, shield ? 'triangle' : 'sawtooth', (shield ? 0.04 : 0.06) * gain)
+  }
+
+  /* ---------- Irka özel sesler (sentez) ---------- */
+
+  private race = 'earth'
+  private voiceBudget = 0
+  private voiceT = 0
+
+  /** Oyuncunun ırkı: silah ve motor tınısı buna göre değişir. */
+  setRace(id: string) {
+    this.race = id
+    if (this.ctx && this.thrustGain) {
+      // Motor gürültüsünün rengi ırka göre.
+      const f = RACE_TIMBRE[id]?.engine ?? 160
+      this.engineHz = f
+    }
+  }
+
+  engineHz = 160
+
+  private now() {
+    return this.ctx ? this.ctx.currentTime : 0
+  }
+
+  /** Kısa gürültü patlaması (vuruş gövdesi, ayak, kaya sesi). */
+  private noiseHit(freq: number, q: number, dur: number, gain: number, type: BiquadFilterType = 'bandpass', delay = 0) {
+    if (!this.ctx || !this.master || !this.noise || this.volume <= 0.001) return
+    const t = this.now() + delay
+    const src = this.ctx.createBufferSource()
+    src.buffer = this.noise
+    src.playbackRate.value = 0.8 + Math.random() * 0.4
+    const f = this.ctx.createBiquadFilter()
+    f.type = type
+    f.frequency.setValueAtTime(freq, t)
+    f.frequency.exponentialRampToValueAtTime(Math.max(40, freq * 0.5), t + dur)
+    f.Q.value = q
+    const g = this.ctx.createGain()
+    g.gain.setValueAtTime(Math.max(0.0008, gain * this.volume), t)
+    g.gain.exponentialRampToValueAtTime(0.0008, t + dur)
+    src.connect(f)
+    f.connect(g)
+    g.connect(this.master)
+    src.start(t, Math.random())
+    src.stop(t + dur + 0.02)
+  }
+
+  /** Perde kaydıran ton (cıvıltı / homurtu / çan). */
+  private sweep(from: number, to: number, dur: number, type: OscillatorType, gain: number, delay = 0, vibrato = 0) {
+    if (!this.ctx || !this.master || this.volume <= 0.001) return
+    const t = this.now() + delay
+    const o = this.ctx.createOscillator()
+    const g = this.ctx.createGain()
+    o.type = type
+    o.frequency.setValueAtTime(Math.max(30, from), t)
+    o.frequency.exponentialRampToValueAtTime(Math.max(30, to), t + dur)
+    if (vibrato > 0) {
+      const lfo = this.ctx.createOscillator()
+      const lg = this.ctx.createGain()
+      lfo.frequency.value = 22 + Math.random() * 10
+      lg.gain.value = vibrato
+      lfo.connect(lg)
+      lg.connect(o.frequency)
+      lfo.start(t)
+      lfo.stop(t + dur + 0.05)
+    }
+    g.gain.setValueAtTime(0.0008, t)
+    g.gain.exponentialRampToValueAtTime(Math.max(0.001, gain * this.volume), t + Math.min(0.02, dur * 0.2))
+    g.gain.exponentialRampToValueAtTime(0.0008, t + dur)
+    o.connect(g)
+    g.connect(this.master)
+    o.start(t)
+    o.stop(t + dur + 0.03)
+  }
+
+  /** Bir ırkın sesi: saldırı çığlığı, acı, ölüm. Çok sık çalmasın diye saniyede ~8 sesle sınırlı. */
+  voice(race: string, kind: 'attack' | 'hurt' | 'die', gain = 1) {
+    if (!this.ctx || gain < 0.05) return
+    const t = this.now()
+    if (t - this.voiceT > 1) {
+      this.voiceT = t
+      this.voiceBudget = 8
+    }
+    if (kind !== 'die' && this.voiceBudget <= 0) return
+    this.voiceBudget--
+    const tm = RACE_TIMBRE[race] ?? RACE_TIMBRE[race.startsWith('wild') ? 'wild' : 'earth']
+    const v = tm.voice
+    const k = kind === 'die' ? 1.4 : kind === 'hurt' ? 1 : 0.8
+    const pitch = v.pitch * (kind === 'hurt' ? 1.25 : kind === 'die' ? 0.8 : 1) * (0.92 + Math.random() * 0.16)
+    const dur = v.dur * (kind === 'die' ? 2.2 : 1)
+    const amp = 0.05 * gain * k
+    switch (v.kind) {
+      case 'chirp':
+        this.sweep(pitch, pitch * (kind === 'die' ? 0.4 : 1.6), dur, 'sine', amp)
+        this.sweep(pitch * 1.5, pitch * 2.2, dur * 0.6, 'triangle', amp * 0.4, dur * 0.3)
+        break
+      case 'growl':
+        this.sweep(pitch, pitch * 0.7, dur, 'sawtooth', amp * 0.7, 0, pitch * 0.25)
+        this.noiseHit(pitch * 3, 2, dur, amp * 0.6)
+        break
+      case 'chime':
+        for (const [i, m] of [1, 2.01, 3.02].entries()) this.sweep(pitch * m, pitch * m * (kind === 'die' ? 0.6 : 1.02), dur * (1.4 - i * 0.3), 'sine', amp * (0.8 - i * 0.2), i * 0.03)
+        break
+      case 'bubble':
+        for (let i = 0; i < 3; i++) this.sweep(pitch * (1 + i * 0.25), pitch * (1.8 + i * 0.3), dur * 0.35, 'sine', amp * 0.8, i * dur * 0.28)
+        break
+      case 'rustle':
+        this.noiseHit(pitch * 6, 0.8, dur, amp * 1.1, 'highpass')
+        this.sweep(pitch, pitch * 1.3, dur * 0.6, 'triangle', amp * 0.5)
+        break
+      case 'rock':
+        this.noiseHit(pitch * 2, 1.2, dur * 1.3, amp * 1.4, 'lowpass')
+        this.sweep(pitch, pitch * 0.6, dur, 'square', amp * 0.35)
+        break
+      case 'bell':
+        this.sweep(pitch, pitch, dur * 1.8, 'sine', amp * 0.9)
+        this.sweep(pitch * 1.5, pitch * 1.5, dur * 1.4, 'sine', amp * 0.45, 0.02)
+        this.sweep(pitch * 2.76, pitch * 2.7, dur, 'triangle', amp * 0.2, 0.04)
+        break
+      case 'clank':
+        this.noiseHit(pitch * 4, 6, dur * 0.6, amp * 1.2)
+        this.sweep(pitch, pitch * 0.8, dur, 'square', amp * 0.4)
+        break
+      case 'roar':
+        this.sweep(pitch, pitch * 0.6, dur * 1.3, 'sawtooth', amp * 0.8, 0, pitch * 0.4)
+        this.noiseHit(pitch * 2.5, 1, dur * 1.2, amp * 0.9, 'lowpass')
+        break
+      default:
+        this.sweep(pitch, pitch * 0.85, dur, 'triangle', amp)
+        this.noiseHit(pitch * 2, 3, dur * 0.7, amp * 0.5)
+    }
+  }
+
+  /** Irka özgü saldırı sesi (gövde biçimine göre). Yancılarda daha ince ve kısık. */
+  attackFx(form: string, gain = 1, small = false) {
+    if (!this.ctx || gain < 0.05) return
+    const t = this.now()
+    if (t - this.voiceT > 1) {
+      this.voiceT = t
+      this.voiceBudget = 8
+    }
+    if (this.voiceBudget <= 0) return
+    this.voiceBudget--
+    const g = gain * (small ? 0.6 : 1)
+    const up = small ? 1.4 : 1
+    switch (form) {
+      case 'astronaut': // savurma + tok yumruk
+        this.noiseHit(1600 * up, 0.8, 0.1, 0.04 * g, 'highpass')
+        this.sweep(150 * up, 70, 0.12, 'sine', 0.09 * g, 0.12)
+        break
+      case 'colonist': // metal balyoz
+        this.noiseHit(700, 1, 0.12, 0.03 * g, 'lowpass', 0)
+        this.noiseHit(2600 * up, 8, 0.25, 0.06 * g, 'bandpass', 0.14)
+        this.sweep(220 * up, 160, 0.3, 'square', 0.03 * g, 0.14)
+        break
+      case 'shade': // çene şaklaması + hırıltı
+        this.sweep(110 * up, 80, 0.2, 'sawtooth', 0.04 * g, 0, 30)
+        this.noiseHit(4200, 6, 0.03, 0.08 * g, 'bandpass', 0.13)
+        this.noiseHit(3600, 6, 0.03, 0.07 * g, 'bandpass', 0.17)
+        break
+      case 'bighead': // tuhaf "boing" kafa atışı
+        this.sweep(260 * up, 520 * up, 0.12, 'sine', 0.05 * g, 0, 18)
+        this.sweep(180, 90, 0.12, 'triangle', 0.06 * g, 0.13)
+        break
+      case 'crystal': // dönen kristal çınlaması
+        for (let i = 0; i < 4; i++) this.sweep(1320 * up * (1 + i * 0.25), 1320 * up * (1 + i * 0.25), 0.18, 'sine', 0.025 * g, i * 0.05)
+        this.noiseHit(6000, 2, 0.2, 0.02 * g, 'highpass', 0.05)
+        break
+      case 'belly': // göbek pıtırtısı
+        this.sweep(90 * up, 160 * up, 0.08, 'sine', 0.08 * g, 0.12)
+        this.sweep(160 * up, 70, 0.16, 'sine', 0.07 * g, 0.2)
+        break
+      case 'sprout': // kırbaç şaklaması
+        this.noiseHit(2400, 0.7, 0.14, 0.03 * g, 'highpass')
+        this.noiseHit(5200, 3, 0.025, 0.12 * g, 'bandpass', 0.17)
+        break
+      case 'golem': // yer sarsan darbe
+        this.noiseHit(400, 0.7, 0.5, 0.12 * g, 'lowpass', 0.16)
+        this.sweep(70 * up, 38, 0.5, 'sine', 0.14 * g, 0.16)
+        break
+      case 'regal': // büyü akoru
+        for (const [i, f] of [523, 659, 784].entries()) this.sweep(f * up, f * up * 1.01, 0.35, 'sine', 0.03 * g, i * 0.03)
+        this.noiseHit(8000, 1, 0.3, 0.015 * g, 'highpass', 0.1)
+        break
+      case 'yeti': // kükreme + çifte darbe
+        this.sweep(150 * up, 90, 0.35, 'sawtooth', 0.05 * g, 0, 40)
+        this.noiseHit(300, 0.8, 0.3, 0.08 * g, 'lowpass', 0.2)
+        break
+      default: // yabani: hırlayıp atılır
+        this.sweep(220 * up, 140, 0.15, 'sawtooth', 0.035 * g, 0, 25)
+        this.noiseHit(3000, 4, 0.04, 0.06 * g, 'bandpass', 0.15)
+    }
+  }
+
+  /** Tarama pingi: sonar gibi yankılanan ton. */
+  scan() {
+    this.sweep(1400, 700, 0.5, 'sine', 0.05)
+    this.sweep(1400, 700, 0.5, 'sine', 0.025, 0.35)
+    this.sweep(1400, 700, 0.5, 'sine', 0.012, 0.7)
+  }
+
+  /** Solucan deliği geçişi: yükselen uğultu ve süpürme. */
+  warp() {
+    this.sweep(90, 620, 1.1, 'sawtooth', 0.035, 0, 12)
+    this.sweep(180, 1240, 1.0, 'sine', 0.03, 0.05)
+    this.noiseHit(3000, 0.6, 1.2, 0.05, 'bandpass')
+  }
+
+  /** Yumruk: hava savurma + isabet varsa tok darbe. */
+  punch(landed: boolean) {
+    // Savurma sesi attackFx'te; burada yalnız isabetin tok darbesi.
+    if (landed) {
+      this.sweep(140, 60, 0.14, 'sine', 0.12, 0.03)
+      this.noiseHit(500, 1.4, 0.1, 0.09, 'lowpass', 0.03)
+    }
+  }
+
+  turret(mine: boolean, gain = 1) {
+    if (gain < 0.05) return
+    this.sweep(mine ? 1300 : 900, mine ? 420 : 260, 0.09, 'square', 0.025 * gain)
+    this.noiseHit(mine ? 3000 : 2000, 2, 0.05, 0.02 * gain)
+  }
+
+  /** Oyuncu gemisinin ateşi: ırkın tınısıyla. */
+  shipShot() {
+    const w = (RACE_TIMBRE[this.race] ?? RACE_TIMBRE.earth).shot
+    this.sweep(w.from * (0.95 + Math.random() * 0.1), w.to, w.dur, w.type, w.gain)
+    if (w.noise) this.noiseHit(w.noise, 2, w.dur * 0.8, w.gain * 0.6)
+  }
+
+  step(race: string, gain = 0.5) {
+    const tm = RACE_TIMBRE[race] ?? RACE_TIMBRE.earth
+    this.noiseHit(tm.step, 1.5, 0.05, 0.02 * gain, 'lowpass')
   }
 
   bang() {
     this.boom()
     this.tone(55, 0.8, 0, 'sine', 0.07)
   }
+}
+
+type Timbre = {
+  voice: { kind: 'chirp' | 'growl' | 'chime' | 'bubble' | 'rustle' | 'rock' | 'bell' | 'clank' | 'roar' | 'hup'; pitch: number; dur: number }
+  shot: { from: number; to: number; dur: number; type: OscillatorType; gain: number; noise?: number }
+  engine: number
+  step: number
+}
+
+/** Irkların ses kişiliği: ses rengi, silah ve motor tınısı. */
+const RACE_TIMBRE: Record<string, Timbre> = {
+  earth: { voice: { kind: 'hup', pitch: 220, dur: 0.14 }, shot: { from: 820, to: 420, dur: 0.07, type: 'square', gain: 0.03 }, engine: 160, step: 500 },
+  mars: { voice: { kind: 'clank', pitch: 160, dur: 0.16 }, shot: { from: 520, to: 180, dur: 0.12, type: 'sawtooth', gain: 0.035, noise: 900 }, engine: 110, step: 380 },
+  proxima: { voice: { kind: 'growl', pitch: 120, dur: 0.22 }, shot: { from: 1400, to: 900, dur: 0.05, type: 'sine', gain: 0.025 }, engine: 240, step: 900 },
+  alpha: { voice: { kind: 'chirp', pitch: 620, dur: 0.12 }, shot: { from: 1100, to: 1900, dur: 0.08, type: 'sine', gain: 0.03 }, engine: 200, step: 700 },
+  trappist: { voice: { kind: 'chime', pitch: 880, dur: 0.25 }, shot: { from: 1760, to: 1320, dur: 0.1, type: 'triangle', gain: 0.03 }, engine: 260, step: 1400 },
+  k218: { voice: { kind: 'bubble', pitch: 260, dur: 0.24 }, shot: { from: 600, to: 300, dur: 0.1, type: 'sine', gain: 0.04, noise: 400 }, engine: 120, step: 300 },
+  kepler186: { voice: { kind: 'rustle', pitch: 330, dur: 0.18 }, shot: { from: 700, to: 500, dur: 0.08, type: 'triangle', gain: 0.03, noise: 2400 }, engine: 180, step: 1200 },
+  gliese: { voice: { kind: 'rock', pitch: 90, dur: 0.22 }, shot: { from: 300, to: 90, dur: 0.16, type: 'sawtooth', gain: 0.045, noise: 600 }, engine: 90, step: 220 },
+  kepler452: { voice: { kind: 'bell', pitch: 520, dur: 0.22 }, shot: { from: 990, to: 990, dur: 0.12, type: 'sine', gain: 0.03 }, engine: 210, step: 800 },
+  ice: { voice: { kind: 'roar', pitch: 140, dur: 0.3 }, shot: { from: 500, to: 200, dur: 0.1, type: 'square', gain: 0.03 }, engine: 140, step: 300 },
+  wild: { voice: { kind: 'growl', pitch: 200, dur: 0.16 }, shot: { from: 500, to: 200, dur: 0.1, type: 'square', gain: 0.03 }, engine: 140, step: 400 },
 }

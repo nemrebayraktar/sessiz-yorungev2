@@ -17,6 +17,7 @@ const start = async (id) => {
     window.__sessiz.confirm()
   }, id)
   await page.waitForFunction(() => window.__sessiz.mode === 'map' && !window.__sessiz.snap().fading)
+await page.evaluate(() => window.__sessiz.noTalk(true))
 }
 await page.evaluate(() => window.__sessiz.skipIntro())
 

@@ -17,6 +17,18 @@ const BLOCK = new Set([
   'KeyB',
   'KeyT',
   'KeyV',
+  'KeyZ',
+  'Digit7',
+  'Digit6',
+  'Digit5',
+  'Digit4',
+  'Digit3',
+  'Digit2',
+  'Digit1',
+  'KeyY',
+  'KeyP',
+  'KeyO',
+  'KeyJ',
   'ShiftLeft',
   'ShiftRight',
   'ControlLeft',
@@ -29,6 +41,7 @@ export class Input {
   mouseX = 0
   mouseY = 0
   mouseDown = false
+  rightDown = false
   stickX = 0
   stickY = 0
   touchFire = false
@@ -48,6 +61,11 @@ export class Input {
   touchWave = false
   touchUpgrade = false
   touchSquad = false
+  touchLook = false
+  touchSilent = false
+  touchScan = false
+  touchSkill = false
+  touchOrder = false
   locked = false
   private readonly el: HTMLElement
 
@@ -81,9 +99,11 @@ export class Input {
     })
     this.el.addEventListener('mousedown', (e) => {
       if (e.button === 0) this.mouseDown = true
+      if (e.button === 2) this.rightDown = true
     })
     window.addEventListener('mouseup', (e) => {
       if (e.button === 0) this.mouseDown = false
+      if (e.button === 2) this.rightDown = false
     })
     this.el.addEventListener('contextmenu', (e) => e.preventDefault())
 
@@ -140,7 +160,8 @@ export class Input {
       'touchstart',
       (e) => {
         for (const t of Array.from(e.changedTouches)) {
-          if (t.clientX > window.innerWidth * 0.42 && lookId === null) {
+          // Joystick ve düğmeler ayrı öğelerdir; tuvaldeki her dokunuş bakış olur.
+          if (lookId === null) {
             lookId = t.identifier
             lx = t.clientX
             ly = t.clientY
@@ -237,6 +258,11 @@ export class Input {
       wave: 'touchWave',
       upgrade: 'touchUpgrade',
       squad: 'touchSquad',
+      look: 'touchLook',
+      silent: 'touchSilent',
+      scan: 'touchScan',
+      skill: 'touchSkill',
+      order: 'touchOrder',
     }
     root.querySelectorAll<HTMLButtonElement>('button[data-act]').forEach((btn) => {
       const key = map[btn.dataset.act || '']

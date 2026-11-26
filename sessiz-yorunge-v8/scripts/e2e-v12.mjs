@@ -61,6 +61,8 @@ const i2b = await info()
 if (i2b.escortGap > 40) errors.push(`escorts lag ${i2b.escortGap}`)
 
 // 3) Yabani gezegen: ekip iner, yerlilere saldırır.
+// Uzun dövüş döngüleri mantığı test eder; yazılımsal GL'de bellek şişmesin diye çizim kapalı (6. adımda açılır).
+await S(() => window.__sessiz.skipRender(true))
 await S(() => window.__sessiz.jump('marskol'))
 await page.waitForFunction(() => window.__sessiz.snap().universe === 'marskol' && !window.__sessiz.snap().fading)
 const wild = await S(() => window.__sessiz.wildPlanet())
@@ -79,9 +81,13 @@ else {
   const i3b = await info()
   console.log('locals', l0, '->', i3b.locals, 'squad', i3b.ground)
   if (!(i3b.locals < l0)) errors.push(`squad did not fight locals ${l0} -> ${i3b.locals}`)
-  // 4) Karakol kur: ekip katılır.
+  // 4) Karakol kur: önce yerliler yenilmeli (v9 kuralı), sonra ekip katılır.
   await S(() => window.__sessiz.giveEnergy(500))
-  const crew = i3b.ground
+  if (i3b.locals > 0) {
+    if (await S(() => window.__sessiz.foundBase())) errors.push('outpost allowed while natives alive')
+    await S(() => window.__sessiz.killLocals())
+  }
+  const crew = (await info()).ground
   if (!(await S(() => window.__sessiz.foundBase()))) errors.push('foundBase failed on wild planet')
   const i4 = await info()
   console.log('founded', i4)
@@ -107,45 +113,44 @@ else {
     const i6 = await info()
     console.log('raid landing', enemy.id, i6)
     if (i6.ground !== i5.ground) errors.push(`raid disembark ${i6.ground}/${i5.ground}`)
-    const turrets = (await S(() => window.__sessiz.botColonies())).find((b) => b.id === enemy.id)?.turrets
-    console.log('enemy level', enemy.level, 'turrets', turrets)
-    // Ekip tek başına sv 1 bir karakolu alabilmeli (oyuncu yardım etmeden).
-    await S(() => window.__sessiz.setLevel(1, true))
-    const hull0 = (await info()).colony?.hull ?? 0
-    for (let k = 0; k < 20; k++) {
+    // v9: düşman üssü tüm savunmacılarıyla hazır; ekip saldırınca kuşatma başlar, savunma düşünce üs teslim olur.
+    if (!(i6.colony && i6.colony.units >= 2)) errors.push(`enemy base not manned at landing: ${JSON.stringify(i6.colony)}`)
+    for (let k = 0; k < 6; k++) {
       await safe()
-      await S(() => window.__sessiz.stepGround(60))
-      const now = await info()
-      if (!now.ground || !now.colony || now.colony.mine) break
+      await S(() => window.__sessiz.stepGround(30))
+      if ((await info()).colony?.besieged) break
     }
     const i6b = await info()
-    console.log('raid fight', hull0, '->', i6b.colony?.hull, 'squad', i6b.ground)
-    if (i6b.colony && !i6b.colony.mine && i6b.ground > 0 && !(i6b.colony.hull < hull0)) errors.push('squad never hit the enemy core')
-    if (i6b.ground > 0 && !i6b.colony.mine) {
-      await S(() => window.__sessiz.weakenCore(1))
-      for (let k = 0; k < 30; k++) {
-        await safe()
-        await S(() => window.__sessiz.stepGround(30))
-        if ((await info()).colony?.mine) break
-      }
+    console.log('siege', i6b.colony)
+    if (!i6b.colony?.besieged && i6b.ground > 0) errors.push('squad attack did not start a siege')
+    await S(() => window.__sessiz.weakenDefenders())
+    for (let k = 0; k < 40; k++) {
+      await safe()
+      await S(() => window.__sessiz.weakenDefenders())
+      await S(() => window.__sessiz.stepGround(30))
+      const now = await info()
+      if (!now.ground || now.colony?.mine) break
     }
     const i7 = await info()
     console.log('captured', i7)
-    if (i6b.ground > 0 && !i7.colony?.mine) errors.push('raid did not capture')
+    if (i6b.ground > 0 && !i7.colony?.mine) errors.push(`raid did not capture ${JSON.stringify(i7.colony)}`)
     if (i7.colony?.mine && i7.ground !== 0) errors.push('squad not settled after capture')
     if (i7.colony?.mine && !(i7.colony.units >= 1)) errors.push('captured colony has no settlers')
   }
 }
 
 // 6) Telefon: Ekip düğmesi yalnız üssün yanında.
+await S(() => window.__sessiz.skipRender(false))
 await page.setViewportSize({ width: 390, height: 844 })
 await S(() => document.body.classList.add('force-touch'))
 await S(() => window.__sessiz.toCore())
 await S(() => window.__sessiz.stepGround(2))
+await page.waitForTimeout(400)
 const vis = await S(() => getComputedStyle(document.querySelector('[data-act="squad"]')).display !== 'none')
 if (!vis) errors.push('squad touch button hidden near own core')
 await S(() => window.__sessiz.toCore(60))
 await S(() => window.__sessiz.stepGround(2))
+await page.waitForTimeout(400)
 const vis2 = await S(() => getComputedStyle(document.querySelector('[data-act="squad"]')).display !== 'none')
 if (vis2) errors.push('squad touch button visible away from core')
 

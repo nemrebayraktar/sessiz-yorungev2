@@ -6,7 +6,7 @@ const browser = await chromium.launch({
   headless: true,
   args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-webgl', '--ignore-gpu-blocklist', '--disable-background-timer-throttling'],
 })
-const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
+const page = await browser.newPage({ viewport: { width: 960, height: 600 } })
 page.on('pageerror', (err) => errors.push(`pageerror: ${err.message}`))
 await page.goto('http://127.0.0.1:4317/', { waitUntil: 'networkidle' })
 await page.waitForFunction(() => window.__sessiz)
@@ -21,18 +21,24 @@ await page.waitForFunction(() => window.__sessiz.mode === 'map' && !window.__ses
 for (const uni of ['gunes', 'avlu', 'kizil', 'soluk', 'proxima']) {
   await page.evaluate((u) => window.__sessiz.jump(u), uni)
   await page.waitForFunction((u) => window.__sessiz.snap().universe === u && !window.__sessiz.snap().fading, uni)
-  const min = await page.evaluate(() => {
-    const s = window.__sessiz
-    const ids = s.snap().planets.map((p) => p.id)
-    let m = Infinity
-    for (let k = 0; k < 200; k++) {
-      s.spinPlanets(60 * 500)
-      const P = ids.map((id) => s.planetPos(id))
-      for (let i = 0; i < P.length; i++)
-        for (let j = i + 1; j < P.length; j++) m = Math.min(m, Math.hypot(P[i].x - P[j].x, P[i].y - P[j].y, P[i].z - P[j].z) - P[i].r - P[j].r)
-    }
-    return m
-  })
+  // Döngü parçalara bölünür: sayfa uzun süre kilitlenmesin (yazılımsal GL'de bellek şişiyor).
+  let min = Infinity
+  for (let chunk = 0; chunk < 20; chunk++) {
+    const m = await page.evaluate(() => {
+      const s = window.__sessiz
+      const ids = s.snap().planets.map((p) => p.id)
+      let m = Infinity
+      for (let k = 0; k < 10; k++) {
+        s.spinPlanets(60 * 500)
+        const P = ids.map((id) => s.planetPos(id))
+        for (let i = 0; i < P.length; i++)
+          for (let j = i + 1; j < P.length; j++) m = Math.min(m, Math.hypot(P[i].x - P[j].x, P[i].y - P[j].y, P[i].z - P[j].z) - P[i].r - P[j].r)
+      }
+      return m
+    })
+    min = Math.min(min, m)
+    await page.waitForTimeout(150)
+  }
   if (min < 150) errors.push(`${uni}: planets too close (${Math.round(min)})`)
 }
 

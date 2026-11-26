@@ -1,5 +1,7 @@
 import {
   AdditiveBlending,
+  OctahedronGeometry,
+  CircleGeometry,
   BoxGeometry,
   CanvasTexture,
   Color,
@@ -23,6 +25,7 @@ import {
   Vector2,
 } from 'three'
 import { shieldFrag, shieldVert } from './shaders'
+import { SHIP_STYLE, buildNeonBody } from './ships'
 
 let glowTex: CanvasTexture | null = null
 
@@ -583,6 +586,15 @@ function bodyLegend() {
 }
 
 export function buildShip(kind: string): PlayerVisual {
+  // Yeni neon gemiler (ships.ts). Eski gövdeler aşağıda yedek olarak duruyor.
+  const style = SHIP_STYLE[kind] ?? SHIP_STYLE.earth
+  if (SHIP_STYLE[kind]) {
+    const v = wrapShip(buildNeonBody(kind), style.plume)
+    const [ex, ey, ez] = style.engine
+    v.plumes.forEach((p, i) => p.position.set(i === 0 ? -ex : ex, ey, ez))
+    v.engineLight.position.set(0, ey, ez + 0.3)
+    return v
+  }
   if (kind === 'earth') return buildPlayer()
   const bodies: Record<string, () => Group> = {
     mars: bodyMars,
@@ -719,37 +731,74 @@ export function buildHumanFighter(): AlienVisual {
   return { root, bodyMat, eyeMat }
 }
 
+/** Solucan deliği: dönen sarmal girdap (ortası karanlık boğaz), sabitleyici halka ve süzülen neon direkler.
+   Tanınır olsun diye tek tasarım: mavi-mor sarmal, altı direk. userData.vortex her karede döner. */
 export function buildWormhole() {
   const g = new Group()
-  const mat = new MeshBasicMaterial({
-    color: 0x9ae7ff,
+  const vortexMat = new ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: /* glsl */ `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: /* glsl */ `
+      uniform float uTime; varying vec2 vUv;
+      void main(){
+        vec2 p = vUv * 2.0 - 1.0;
+        float r = length(p);
+        if (r > 1.0) discard;
+        float a = atan(p.y, p.x);
+        float swirl = sin(a * 4.0 + log(r + 0.02) * 9.0 - uTime * 2.2);
+        float arms = smoothstep(0.2, 1.0, swirl) * smoothstep(1.0, 0.25, r);
+        float throat = smoothstep(0.32, 0.05, r);
+        vec3 c1 = vec3(0.35, 0.85, 1.0);
+        vec3 c2 = vec3(0.7, 0.4, 1.0);
+        vec3 col = mix(c2, c1, r) * arms * 2.2 + vec3(0.9, 0.95, 1.0) * smoothstep(0.42, 0.3, r) * smoothstep(0.18, 0.3, r) * 1.6;
+        float alpha = clamp(arms * 0.9 + smoothstep(1.0, 0.6, r) * 0.25, 0.0, 1.0) * (1.0 - throat * 0.2);
+        col = mix(col, vec3(0.0), throat);
+        gl_FragColor = vec4(col, max(alpha, throat * 0.95));
+      }`,
     transparent: true,
-    opacity: 0.9,
-    blending: AdditiveBlending,
     depthWrite: false,
     side: DoubleSide,
   })
-  mat.toneMapped = false
-  const ring = new Mesh(new TorusGeometry(7.5, 0.35, 12, 48), mat)
+  vortexMat.toneMapped = false
+  const vortex = new Mesh(new CircleGeometry(7.2, 64), vortexMat)
+  vortex.rotation.x = -Math.PI / 2
+  const ringMat = new MeshStandardMaterial({ color: 0x2a3346, metalness: 0.8, roughness: 0.3, emissive: 0x1a2a4a, emissiveIntensity: 0.4 })
+  const neon = new MeshBasicMaterial({ color: new Color(0x9ae7ff).multiplyScalar(1.8) })
+  neon.toneMapped = false
+  const ring = new Mesh(new TorusGeometry(8, 0.55, 12, 64), ringMat)
   ring.rotation.x = Math.PI / 2
-  const inner = new Mesh(new TorusGeometry(4.2, 0.12, 8, 36), mat)
-  inner.rotation.x = Math.PI / 2
+  const ringGlow = new Mesh(new TorusGeometry(8, 0.14, 8, 64), neon)
+  ringGlow.rotation.x = Math.PI / 2
+  ringGlow.position.y = 0.5
+  const pylons = new Group()
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2
+    const pylon = new Mesh(new OctahedronGeometry(0.8, 0), ringMat)
+    pylon.scale.set(0.6, 2.2, 0.6)
+    pylon.position.set(Math.cos(a) * 10, 0, Math.sin(a) * 10)
+    const core = new Mesh(new OctahedronGeometry(0.35, 0), neon)
+    core.position.copy(pylon.position)
+    pylons.add(pylon, core)
+  }
   const glow = new Sprite(
-    new SpriteMaterial({
-      map: glowTexture(),
-      color: 0x7ad7ff,
-      transparent: true,
-      blending: AdditiveBlending,
-      depthWrite: false,
-      opacity: 0.85,
-    }),
+    new SpriteMaterial({ map: glowTexture(), color: 0x7ad7ff, transparent: true, blending: AdditiveBlending, depthWrite: false, opacity: 0.7 }),
   )
-  glow.scale.set(16, 16, 1)
-  const label = buildLabel('Eşik')
+  glow.scale.set(22, 22, 1)
+  const label = buildLabel('Solucan deliği')
   label.name = 'label'
-  label.position.set(12, 1.5, 0)
-  g.add(ring, inner, glow, label)
+  label.position.set(13, 2.5, 0)
+  g.add(vortex, ring, ringGlow, pylons, glow, label)
+  g.userData.vortex = vortexMat
+  g.userData.pylons = pylons
   return g
+}
+
+/** Solucan deliği animasyonu: girdap akar, direkler ters yönde döner. */
+export function tickWormhole(g: Group, t: number, dt: number) {
+  const m = g.userData.vortex as ShaderMaterial | undefined
+  if (m) m.uniforms.uTime.value = t
+  const p = g.userData.pylons as Group | undefined
+  if (p) p.rotation.y -= dt * 0.25
 }
 
 export function buildLabel(text: string) {

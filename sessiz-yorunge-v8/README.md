@@ -48,15 +48,23 @@ Geliştirmeler: gövde, kalkan, silah, motor, gizlilik. Motor itişi artırır, 
 | `R` | Ufka dengele |
 | `C` | Kovalamaca kamerası / kokpit |
 | `F` | Filoyla kapış veya yeterince uzaktaysan kaç |
-| `G` | Özel yetenek |
+| `G` | Gemide: özel yetenek · Yayayken: ırk yeteneği (Hava desteği, Deprem, Gölge adımı…) |
 | `H` | Mini kara delik (Kepler-452b) |
 | `X` | Açık silahlar arasında geç |
 | `L` | Gezegene in / yüzeyde gemiye bin |
 | `B` | Yüzeyde üs ya da karakol kur; üssün yanında onar / yükselt |
-| `T` | Üssün yanında taret kur |
-| `V` | Sıradaki uzaylı dalgasını erken çağır |
-| `E` / sol tık | Yüzeyde, park ettiğin geminin yanında: gemiyi geliştir (`U` uzayda sadece hatırlatır) |
+| `T` | Yüzeyde: üssün yanında taret kur · Gemide: tarama (filoları ve kaynak yataklarını gösterir, görünürlüğü artırır) |
+| `V` | Sessiz süzülme: motor kapalı, yavaş ama neredeyse görünmez |
+| `O` | Diplomasi paneli (hediye, ticaret, ittifak, haraç, sömürge, savaş) |
+| `P` | Fotoğraf modu (sürükle: döndür, tekerlek: yakınlaş, filtre, kaydet) |
+| `Y` | Emirler paneli (dizilim) |
+| `1`–`4` | Üs birlikleri: Serbest / Taret önü / Taret arkası / Hücum |
+| `5`–`7` | Ekip: Takip / Bekle / Saldır |
+| `E` / sol tık | Yüzeyde, park ettiğin geminin yanında: gemi parçaları (her kademede iki seçenek, 5. kademe ırka özel efsane parça) |
+| `F` (yüzeyde) | Yumruk; parlayan yatağın yanında kazı (⛏ maden, ◆ kristal) |
 | `K` | Kendi üssünün yanında baskın ekibi topla / geri bırak |
+| `J` | Görev günlüğü (görev, hikâye, keşifler) |
+| Sağ tık / `Z` basılı | Kamerayı karakterin ya da durmuş geminin çevresinde döndür |
 | `N` | Sağ altta radar ↔ sistem haritası |
 | `Esc` | Duraklat |
 | `M` | Sesi kapat / aç |

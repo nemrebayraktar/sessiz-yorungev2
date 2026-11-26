@@ -148,7 +148,27 @@ export type Colony = {
   shipCool?: number
   /** İleride: gemiyle oyuncuyu takip edip baskına katılacak yerleşimci sayısı (şimdilik kullanılmıyor). */
   reserve?: number
+  /** Kuşatma: oyuncu tarafı saldırdı; savunmacı yeniden doğmaz, hepsi düşünce üs teslim olur. */
+  besieged?: boolean
+  /** Dizilim emri: serbest dolaşma, taret önü, taret arkası ya da hücum. */
+  order?: ColonyOrder
 }
+
+export type ColonyOrder = 'serbest' | 'on' | 'arka' | 'hucum'
+export type SquadOrder = 'takip' | 'bekle' | 'saldir'
+
+export const COLONY_ORDERS: { id: ColonyOrder; name: string; blurb: string }[] = [
+  { id: 'serbest', name: 'Serbest', blurb: 'Üssün çevresinde dolaşır, yaklaşanı karşılar.' },
+  { id: 'on', name: 'Taret önü', blurb: 'Taretlerin önüne dizilir; düşmanı taret menziline çeker.' },
+  { id: 'arka', name: 'Taret arkası', blurb: 'Taretlerin arkasında bekler; yalnız üsse yaklaşanı vurur, daha az hasar alır.' },
+  { id: 'hucum', name: 'Hücum', blurb: 'Uzaktaki düşmanın da üstüne koşar, daha sert vurur ama korumasız.' },
+]
+
+export const SQUAD_ORDERS: { id: SquadOrder; name: string; blurb: string }[] = [
+  { id: 'takip', name: 'Takip', blurb: 'Seni izler, yakındaki düşmanla dövüşür.' },
+  { id: 'bekle', name: 'Bekle', blurb: 'Bulunduğun yerde mevzi tutar.' },
+  { id: 'saldir', name: 'Saldır', blurb: 'Gezegendeki düşman üssüne doğrudan yürür.' },
+]
 
 export type Unit = {
   alive: boolean

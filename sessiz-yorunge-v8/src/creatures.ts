@@ -15,6 +15,10 @@ import {
   OctahedronGeometry,
   SphereGeometry,
   TorusGeometry,
+  Box3,
+  Raycaster,
+  Vector3,
+  type Material,
 } from 'three'
 import type { Rig, RigStyle } from './meshes'
 
@@ -243,6 +247,7 @@ function shade(look: CreatureLook): Parts {
   const halo = new Mesh(sph(0.3, 12, 10), new MeshBasicMaterial({ color: 0xff2020, transparent: true, opacity: 0.18, blending: AdditiveBlending, depthWrite: false }))
   halo.position.set(0, 0.02, 0.32)
   const jaw = part(box(0.36, 0.08, 0.18), new MeshBasicMaterial({ color: 0x0a0306 }), 0, -0.26, 0.26)
+  jaw.name = 'jaw'
   p.head.add(skull, brow, eyeGlow, slit, halo, jaw)
   for (let i = 0; i < 6; i++) {
     const tooth = part(cone(0.025, 0.1, 4), bone, -0.14 + i * 0.056, -0.21, 0.34)
@@ -651,6 +656,116 @@ function wild(look: CreatureLook): Parts {
   return p
 }
 
+
+/* ---------- Uzuvları gövdeye bağlama ----------
+   Modeller aynen kalır; yalnız aradaki boşluklar kapanır: omuz/kalça eklem topu, eklemden gövde yüzeyine
+   kısa bir bağlantı (kol kökü / uyluk) ve kafa havada duruyorsa boyun. Yüzey, eklemden gövde merkezine
+   atılan bir ışınla bulunur; böylece koni ya da küre gövdelerde de tam yüzeye oturur. */
+const ray = new Raycaster()
+const tmpA = new Vector3()
+const tmpB = new Vector3()
+
+function firstMesh(g: Object3D): Mesh | null {
+  for (const c of g.children) {
+    if (c instanceof Mesh) return c
+  }
+  for (const c of g.children) {
+    const m = firstMesh(c)
+    if (m) return m
+  }
+  return null
+}
+
+function bodyMeshes(p: Parts) {
+  const skip = new Set<Object3D>([p.head, p.armL, p.armR, p.legL, p.legR])
+  return p.hips.children.filter((c): c is Mesh => c instanceof Mesh && !skip.has(c) && !(c.material instanceof MeshBasicMaterial))
+}
+
+/** Eklemden gövde merkezine ışın: ilk vurduğu gövde yüzeyi (hips uzayında). */
+function surfaceHit(p: Parts, from: Vector3, toward: Vector3) {
+  const meshes = bodyMeshes(p)
+  if (!meshes.length) return null
+  p.hips.updateMatrixWorld(true)
+  tmpA.subVectors(toward, from)
+  const len = tmpA.length()
+  if (len < 1e-4) return null
+  ray.set(from, tmpA.normalize())
+  ray.far = len + 0.5
+  const hits = ray.intersectObjects(meshes, false)
+  return hits.length ? hits[0] : null
+}
+
+function limbRadius(limb: Group) {
+  const m = firstMesh(limb)
+  if (!m) return 0.06
+  m.geometry.computeBoundingBox()
+  const bb = m.geometry.boundingBox as Box3
+  const sx = (bb.max.x - bb.min.x) * Math.abs(m.scale.x)
+  const sz = (bb.max.z - bb.min.z) * Math.abs(m.scale.z)
+  return Math.min(0.15, Math.max(0.03, Math.min(sx, sz) * 0.42))
+}
+
+function bridge(from: Vector3, to: Vector3, r: number, material: Material) {
+  const len = Math.round(from.distanceTo(to) * 100) / 100
+  const rr = Math.round(r * 100) / 100
+  // Paylaşılan geometri: kalabalık nüfusta her birim yeni geometri üretmesin.
+  const geo = cached(`br${rr}:${len}`, () => new CylinderGeometry(rr * 0.92, rr, len, 10))
+  const m = new Mesh(geo, material)
+  m.position.copy(from).add(to).multiplyScalar(0.5)
+  tmpB.subVectors(to, from).normalize()
+  m.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), tmpB)
+  m.castShadow = false
+  return m
+}
+
+function connectParts(p: Parts) {
+  const meshes = bodyMeshes(p)
+  if (!meshes.length) return
+  const box = new Box3()
+  p.hips.updateMatrixWorld(true)
+  for (const m of meshes) box.expandByObject(m)
+  const center = box.getCenter(new Vector3())
+  for (const limb of [p.armL, p.armR, p.legL, p.legR]) {
+    const m = firstMesh(limb)
+    if (!m) continue
+    const r = limbRadius(limb)
+    const material = m.material as Material
+    // Eklem topu: uzuv dönse de omuz/kalça hep dolu görünür.
+    const ball = new Mesh(sph(Math.round(r * 112) / 100, 12, 10), material)
+    limb.add(ball)
+    const pivot = limb.position.clone()
+    const isLeg = limb === p.legL || limb === p.legR
+    // Bacakta gövde merkezine yukarı-içeri, kolda yatay-içeri bak.
+    const aim = isLeg ? new Vector3(pivot.x * 0.4, center.y, pivot.z) : new Vector3(0, pivot.y, pivot.z)
+    const inside = box.containsPoint(pivot) && surfaceHit(p, pivot, aim) === null
+    if (inside) continue
+    const hit = surfaceHit(p, pivot, aim)
+    if (!hit) {
+      // Işın kaçtıysa kutunun en yakın noktasına bağla.
+      const q = box.clampPoint(pivot, new Vector3())
+      if (q.distanceTo(pivot) > r * 0.6) p.hips.add(bridge(pivot, q.lerp(center, 0.08), r * 0.9, material))
+      continue
+    }
+    if (hit.distance > r * 0.6) {
+      const q = hit.point.clone().lerp(center, 0.06)
+      p.hips.add(bridge(pivot, q, r * 0.9, material))
+    }
+  }
+  // Boyun: kafa gövdenin üstünde havada duruyorsa.
+  const headMesh = firstMesh(p.head)
+  if (headMesh) {
+    headMesh.geometry.computeBoundingSphere()
+    const hr = (headMesh.geometry.boundingSphere?.radius ?? 0.25) * Math.min(Math.abs(headMesh.scale.y), Math.abs(headMesh.scale.x))
+    const hp = p.head.position.clone()
+    const hit = surfaceHit(p, hp, new Vector3(center.x, Math.min(center.y, box.max.y - 0.05), center.z))
+    const gap = hit ? hit.distance - hr : 0
+    if (hit && gap > 0.02) {
+      const from = hp.clone().addScaledVector(tmpA.subVectors(hit.point, hp).normalize(), hr * 0.7)
+      p.hips.add(bridge(from, hit.point.clone().lerp(center, 0.05), Math.max(0.05, hr * 0.32), headMesh.material as Material))
+    }
+  }
+}
+
 const BUILDERS: Record<CreatureForm, (look: CreatureLook) => Parts> = {
   astronaut,
   colonist,
@@ -668,6 +783,7 @@ const BUILDERS: Record<CreatureForm, (look: CreatureLook) => Parts> = {
 /** Tür görünümünden yürüyen bir gövde kurar. Ayaklar kökün `FEET` kadar altındadır. */
 export function buildCreature(look: CreatureLook): Rig {
   const p = BUILDERS[look.form](look)
+  connectParts(p)
   const root = new Group()
   const lift = new Group() // stepRig'in zıplama/süzülme için oynattığı ara katman
   lift.position.y = FEET
@@ -818,12 +934,19 @@ function minionParts(look: CreatureLook): Parts {
   p.legR.position.set(0.11, form === 'regal' ? 0.12 : 0.3, 0)
   for (const leg of [p.legL, p.legR]) leg.add(part(cap(0.07, form === 'regal' ? 0.02 : 0.12), form === 'astronaut' ? mat(0x3d4658) : dark, 0, -0.15, 0.02))
   p.hips.add(torso)
+  // Sivri uçlu gövdelerde (Gölge, Işıltı) bacaklar boşta kalmasın: küçük bir leğen.
+  if (form === 'shade' || form === 'crystal') {
+    const pelvis = part(sph(0.13, 12, 10), form === 'crystal' ? mat(bodyHex, { glow: 0.45, rough: 0.2 }) : body, 0, 0.36, 0)
+    pelvis.scale.set(1.45, 0.85, 1.05)
+    p.hips.add(pelvis)
+  }
   return p
 }
 
 /** Yancı gövdesi: ırkın küçük, sade sürümü. Ayaklar ana karakterlerdeki gibi `FEET` hizasında. */
 export function buildMinion(look: CreatureLook): Rig {
   const p = minionParts(look)
+  connectParts(p)
   const root = new Group()
   const lift = new Group()
   lift.position.y = FEET

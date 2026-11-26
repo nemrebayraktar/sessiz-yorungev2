@@ -10,3 +10,10 @@ import './style.css'
 import { boot } from './game'
 
 boot()
+
+// Ana ekrana eklenebilir uygulama (PWA): yalnız derlenmiş sürümde, göreli yolla (GitHub Pages alt klasörü için).
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(() => {})
+  })
+}
