@@ -68,6 +68,7 @@ export class Input {
   touchSkill = false
   touchOrder = false
   touchDodge = false
+  touchCam = false
   locked = false
   private readonly el: HTMLElement
 
@@ -266,6 +267,7 @@ export class Input {
       skill: 'touchSkill',
       order: 'touchOrder',
       dodge: 'touchDodge',
+      cam: 'touchCam',
     }
     root.querySelectorAll<HTMLButtonElement>('button[data-act]').forEach((btn) => {
       const key = map[btn.dataset.act || '']

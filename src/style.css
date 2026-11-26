@@ -863,3 +863,28 @@ body.photo #dep-mark { display: none !important; }
 #floats span { font-size: 20px; font-weight: 800; -webkit-text-stroke: 1px rgba(0, 0, 0, 0.5); }
 #floats span.hit { font-size: 22px; }
 #floats span.hurt { font-size: 24px; color: #ff5a4a; }
+#base-mark { position: absolute; z-index: 2; pointer-events: none; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; gap: 1px; }
+#base-mark i { font-style: normal; font-size: 22px; color: #8ff0a4; text-shadow: 0 0 10px rgba(120, 255, 160, 0.9); display: block; }
+#base-mark b { font-weight: 600; font-size: 11px; color: #e4ffe9; background: rgba(8, 10, 14, 0.7); padding: 1px 8px; border-radius: 999px; border: 1px solid rgba(143, 240, 164, 0.6); }
+#base-mark span { font-size: 10px; color: #c8ffd2; }
+#base-mark.edge i { font-size: 0; width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 18px solid #8ff0a4; filter: drop-shadow(0 0 8px rgba(120, 255, 160, 0.9)); text-shadow: none; }
+#base-mark.enemy i { color: #ff7a6a; text-shadow: 0 0 10px rgba(255, 90, 70, 0.9); }
+#base-mark.enemy b { border-color: rgba(255, 110, 90, 0.7); color: #ffe0da; }
+#base-mark.enemy span { color: #ffc8c0; }
+#base-mark.enemy.edge i { border-bottom-color: #ff7a6a; filter: drop-shadow(0 0 8px rgba(255, 90, 70, 0.9)); }
+body.photo #base-mark { display: none !important; }
+.badge.raid { color: #ffd0c8; border-color: rgba(255, 90, 70, 0.8); background: rgba(120, 20, 10, 0.45); animation: silentPulse 1s ease-in-out infinite; }
+
+/* ---------- v13: sade dokunmatik düzen — ana düğmeler + "⋯" ile açılan ikinciller ---------- */
+#touch-buttons button.more { display: none; }
+body.more-open #touch-buttons button.more { display: block; }
+body.on-foot.more-open #touch-buttons button.more.ship-only,
+body:not(.on-foot).more-open #touch-buttons button.more.foot-only { display: none; }
+body.more-open:not(.order-ready) #touch-buttons button.more.order-only { display: none; }
+#touch-buttons .more-btn { font-size: 20px; letter-spacing: 0.1em; border-color: rgba(231, 227, 218, 0.35); }
+body.more-open #touch-buttons .more-btn { background: rgba(228, 161, 92, 0.25); border-color: rgba(228, 161, 92, 0.8); }
+#touch-buttons button.more { background: rgba(20, 24, 32, 0.6); }
+#touch-buttons button[data-act="fire"] { background: rgba(228, 120, 60, 0.28); }
+body.no-ab1.more-open #touch-buttons button[data-act="ab1"], body.no-ab2.more-open #touch-buttons button[data-act="ab2"] { display: none; }
+#lock-on::after { content: attr(data-role); position: absolute; left: 50%; top: 100%; transform: translate(-50%, 6px); font-size: 10px; letter-spacing: 0.14em; color: #ffd0a0; white-space: nowrap; text-shadow: 0 1px 4px #000; }
+#lock-on.picked { border-color: #ff7a4a !important; box-shadow: 0 0 12px rgba(255, 120, 70, 0.8); }

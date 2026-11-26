@@ -25,7 +25,7 @@ async function boot(width, height, origin, touch = false) {
     window.__sessiz.confirm()
   }, origin)
   await page.waitForFunction(() => window.__sessiz.mode === 'map' && !window.__sessiz.snap().fading)
-await page.evaluate(() => window.__sessiz.tutorial(false, false))
+await page.evaluate(() => { window.__sessiz.tutorial(false, false); window.__sessiz.noTalk(true) })
   return page
 }
 
@@ -58,7 +58,8 @@ for (const id of origins) {
   }
   const foreignAtHome = world.filter((w) => w.universe === homes[id] && !w.mine)
   if (foreignAtHome.length) errors.push(`${tag} foreign outposts in player home: ${JSON.stringify(foreignAtHome)}`)
-  if (s.smallFleets < 3 || s.smallFleets > 5 || s.fleetCount !== s.smallFleets) errors.push(`${tag} home ships ${s.smallFleets}/${s.fleetCount}`)
+  // v13: ev sistemi sakin başlar (eğitim devriyesi yok).
+  if (s.smallFleets !== 0) errors.push(`${tag} home ships at start ${s.smallFleets}/${s.fleetCount}`)
   if (s.mode !== 'map') errors.push(`${tag} mode ${s.mode}`)
 }
 console.log('starts ok for', origins.length, 'origins')
@@ -69,6 +70,7 @@ if (shots) {
   await page.waitForTimeout(600)
   await page.screenshot({ path: `${shots}/1-baslangic-ev-gezegeni-ve-karakol.png` })
 }
+await page.evaluate(() => window.__sessiz.spawnTrainers(3))
 const before = await page.evaluate(() => window.__sessiz.snap())
 const small = await page.evaluate(() => window.__sessiz.engageNearest())
 await page.waitForTimeout(150)
@@ -225,7 +227,10 @@ await phone.evaluate(() => {
   window.__sessiz.showTouch(true)
   window.__sessiz.setMobile(true)
 })
-await phone.evaluate(() => window.__sessiz.engageNearest())
+await phone.evaluate(() => {
+  window.__sessiz.spawnTrainers(2)
+  window.__sessiz.engageNearest()
+})
 await phone.waitForTimeout(700)
 s = await phone.evaluate(() => window.__sessiz.snap())
 if (s.mode !== 'map' || !s.skirmish) errors.push(`mobile fight ${s.mode} ${s.skirmish}`)

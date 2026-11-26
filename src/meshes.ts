@@ -636,9 +636,33 @@ function buildCockpit(neonHex: number, kind = 'earth') {
     g.add(arm)
     arms.push(arm)
   }
+  // Konsolun iki yanında ikiz toplar: ateşte namlu parlar, top geri teper.
+  const guns: Group[] = []
+  const flashes: Sprite[] = []
+  for (const side of [-1, 1]) {
+    const gun = new Group()
+    gun.position.set(side * 0.56, 0.17, -0.9)
+    const body = new Mesh(new BoxGeometry(0.1, 0.08, 0.34), metal)
+    const barrel = new Mesh(new CylinderGeometry(0.022, 0.028, 0.42, 10), dark)
+    barrel.rotation.x = Math.PI / 2
+    barrel.position.z = -0.32
+    const ringM = new Mesh(new TorusGeometry(0.03, 0.008, 6, 14), trimMat)
+    ringM.position.z = -0.5
+    const fm = new SpriteMaterial({ map: glowTexture(), color: new Color(neonHex).lerp(new Color(0xffffff), 0.5).multiplyScalar(2), transparent: true, opacity: 0, blending: AdditiveBlending, depthWrite: false })
+    fm.toneMapped = false
+    const flash = new Sprite(fm)
+    flash.scale.set(0.35, 0.35, 1)
+    flash.position.z = -0.6
+    gun.add(body, barrel, ringM, flash)
+    g.add(gun)
+    guns.push(gun)
+    flashes.push(flash)
+  }
   g.userData.sticks = sticks
   g.userData.arms = arms
   g.userData.buttons = buttons
+  g.userData.guns = guns
+  g.userData.flashes = flashes
   return g
 }
 

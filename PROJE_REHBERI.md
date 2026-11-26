@@ -222,3 +222,16 @@ Yaya modunda (`layer: 'foot'`) çalışır; mantık `game.ts` içinde "Üs savun
 - **Uzay taktikleri:** Tab hedef seçer (nişan yardımı geniş açıyla ona kilitlenir, kilit işareti onu gösterir); B kaçınma taklası (yana kayma + takla, 0,45 sn hasar almaz, 2,6 sn bekleme; dokunmatikte "Kaç"); eşlik gemilerine 1 takip / 2 saldır (seçili hedefin çevresinde dönüp daha sık ve sert ateş) / 3 koru (yanında kalır, sana yaklaşanı vurur).
 - **Müzik** (`music.ts`): tamamen sentezlenen özgün uyarlanır müzik; her sistemin tonu, akor yürüyüşü, temposu ve tınısı ayrı (org, çan, cam, sıcak); org benzeri katmanlar, saat tıkırtısı gibi arpej, dron ve uzay yankısı. Savaşta tempo artar, bas ostinatosu ve davul girer; üs dalgasında yarı gerilim. Ayarlardan kapatılabilir.
 - Test: `scripts/e2e-v16.mjs`.
+
+## Aşama 15 (v13: üs yapısı ve oklar, sakin ev sistemi, baskınlar, kokpit topları, sade dokunmatik, düşman rolleri)
+- **Üs yapısı** (`buildDistrict`, `Game.districtOf`): çekirdek (ırk anıtı) her zaman en büyük yapı; çevresinde ondan küçük yan yapılar: yaşam evleri (seviyeyle 2→6), kışla (sv2+, ekip sınırı +2), atölye (sv3+, parça fiyatı −%15, `partCost`), gözcü kulesi (sv4+, taret menzili +%25). Yan yapılara çarpılır (`blockDir` → `root.userData.blocks`). Üs paneli yapıları ve etkilerini yazar.
+- **Köy evleri:** yerli evleri sabit insan boyunda (eskiden gezegen boyuyla büyüyüp çekirdeği gizliyordu); üs kurulan gezegende köy görünmez.
+- **Üs oku** (`#base-mark`, `paintBaseMark`): yayayken kendi üssün yeşil "⌂ Ana üssün / Kolonin", düşman gezegeninde kırmızı "… çekirdeği"; ekran dışındaysa kenarda ok.
+- **İniş:** üssü olan gezegende L ile iniş üssün yanına (kendi üssünde 14–18 birim, düşman üssünde 45 birim ötesi).
+- **Sakin ev sistemi:** başta eğitim devriyesi yok; keşif gemisi görevinden sonra en çok 1 devriye, 90 sn arayla; küçük gemiler yalnız çok gürültüde (görünürlük 45+) ya da çok yakında fark eder, yerdeyken hiç. Gürültü bantları evde yalnız en yüksek eşikte tek küçük gemi çağırır.
+- **Baskınlar** (`raidTick`): "fetih" adımından sonra 4–8 dk'da bir, dost olmayan bir ırk uzaktaki kolonine saldırır: uyarı, olay akışı, kırmızı rozet ve rota. 75 sn içinde inersen saldırganlar hemen gelir ve savunursun; inmezsen üs kendi gücüyle (seviye ve taretler) savunur: püskürtür ya da hasar/nüfus kaybeder, kolonilerse düşebilir.
+- **Yerde sade ekran:** yayayken gökyüzündeki gezegen etiketleri gizli.
+- **Kokpit topları:** konsolun iki yanında ikiz top; mermi o toptan çıkar, namlu parlar, top geri teper, hafif sarsıntı. Ortadaki eski namlu parlaması kokpitte gizli.
+- **Dokunmatik düzen:** gemide Ateş/Hız/Sessiz/Kaç/İn/⋯, yayayken Yumruk/Zıpla/Yetenek/Üs/İn/⋯; duruma göre Parça (gemi yanında) ve Ekip (çekirdek yanında). "⋯" ikincilleri açar: Tara, Silah, **Kamera** (kokpit), Yukarı/Aşağı, Bak, G/H; yayayken Taret, Emir.
+- **Düşman rolleri:** avcı (küçük, kırmızımsı, çok hızlı, dibine girer, sık ateş, az can), bombacı (büyük, turuncumsu, uzakta durur, güdümlü füze atar), kalkanlı (mavi kalkan küresi, 3,2× kalkan, yavaşça yeniden dolar). Savaş başında rol özeti; kilit işaretinin altında hedefin rolü (KALKANLI / KALKAN KIRILDI…).
+- Test: `scripts/e2e-v17.mjs`.

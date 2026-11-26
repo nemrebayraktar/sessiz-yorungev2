@@ -66,6 +66,7 @@
               <div id="weapon-name" class="badge">Lazer</div>
               <div id="colony-flag" class="badge hidden">Koloni 0</div>
               <div id="squad-flag" class="badge squad hidden">Ekip 0</div>
+              <div id="raid-flag" class="badge raid hidden"></div>
               <div id="res-chip" class="badge res">⛏ 0 · ◆ 0</div>
               <div id="silent-flag" class="badge silent hidden">Sessiz</div>
               <div id="skill-chip" class="badge skill hidden"></div>
@@ -92,6 +93,7 @@
           <small id="q-hint"></small>
         </button>
         <div id="quest-mark" class="hidden" aria-hidden="true"><i>◆</i><span id="quest-dist"></span></div>
+        <div id="base-mark" class="hidden" aria-hidden="true"><i>⌂</i><b id="base-mark-name">Üssün</b><span id="base-mark-dist"></span></div>
         <div id="dep-mark" class="hidden" aria-hidden="true"><i>⛏</i><span id="dep-dist"></span></div>
         <div id="ship-mark" class="hidden" aria-hidden="true"><i>▲</i><b>Gemin</b><span id="ship-dist"></span></div>
         <div id="celebrate" aria-live="polite"><strong id="cel-title"></strong><span id="cel-sub"></span></div>
@@ -149,26 +151,32 @@
       <div id="touch">
         <div id="stick" aria-hidden="true"><div id="knob"></div></div>
         <div id="touch-buttons">
-          <button type="button" data-act="up" class="ship-only">Yukarı</button>
-          <button type="button" data-act="boost" class="ship-only">Hız</button>
-          <button type="button" data-act="down" class="ship-only">Aşağı</button>
+          <!-- Gemi: ana düğmeler -->
           <button type="button" data-act="fire" class="fire ship-only">Ateş</button>
-          <button type="button" data-act="ab1" class="ship-only ab">G</button>
-          <button type="button" data-act="ab2" class="ship-only ab">H</button>
-          <button type="button" data-act="weapon" class="ship-only">Silah</button>
-          <button type="button" data-act="land">İn</button>
-          <button type="button" data-act="look" class="ship-only look">Bak</button>
+          <button type="button" data-act="boost" class="ship-only">Hız</button>
           <button type="button" data-act="silent" class="ship-only">Sessiz</button>
-          <button type="button" data-act="scan" class="ship-only">Tara</button>
           <button type="button" data-act="dodge" class="ship-only">Kaç</button>
-          <button type="button" data-act="skill" class="foot-only">Yetenek</button>
-          <button type="button" data-act="order" class="foot-only order-only">Emir</button>
-          <button type="button" data-act="jump" class="foot-only">Zıpla</button>
+          <!-- Yaya: ana düğmeler -->
           <button type="button" data-act="punch" class="foot-only">Yumruk</button>
+          <button type="button" data-act="jump" class="foot-only">Zıpla</button>
+          <button type="button" data-act="skill" class="foot-only">Yetenek</button>
           <button type="button" data-act="build" class="foot-only">Üs</button>
-          <button type="button" data-act="turret" class="foot-only">Taret</button>
-          <button type="button" data-act="upgrade" class="foot-only upgrade-only">Geliştir</button>
+          <!-- Duruma göre beliren -->
+          <button type="button" data-act="upgrade" class="foot-only upgrade-only">Parça</button>
           <button type="button" data-act="squad" class="foot-only squad-only">Ekip</button>
+          <button type="button" data-act="land">İn</button>
+          <button type="button" class="more-btn" id="touch-more" aria-label="Diğer düğmeler">⋯</button>
+          <!-- ⋯ ile açılan ikinciller -->
+          <button type="button" data-act="scan" class="ship-only more">Tara</button>
+          <button type="button" data-act="weapon" class="ship-only more">Silah</button>
+          <button type="button" data-act="cam" class="ship-only more">Kamera</button>
+          <button type="button" data-act="up" class="ship-only more">Yukarı</button>
+          <button type="button" data-act="down" class="ship-only more">Aşağı</button>
+          <button type="button" data-act="look" class="ship-only more look">Bak</button>
+          <button type="button" data-act="ab1" class="ship-only ab more">G</button>
+          <button type="button" data-act="ab2" class="ship-only ab more">H</button>
+          <button type="button" data-act="turret" class="foot-only more">Taret</button>
+          <button type="button" data-act="order" class="foot-only more order-only">Emir</button>
         </div>
       </div>
 

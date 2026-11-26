@@ -41,7 +41,7 @@ let i1 = await info()
 console.log('recruit', before, '->', i1)
 if (!(i1.ground >= 2)) errors.push(`recruit took ${i1.ground}`)
 if (!(i1.heroes >= 1)) errors.push('no hero in squad at level 3')
-if (i1.ground > 8) errors.push('squad over cap')
+if (i1.ground > 10) errors.push('squad over cap') // kışla (sv2+) sınırı 8 → 10
 if (!(i1.colony.units >= 1)) errors.push('colony emptied by recruit')
 await S(() => window.__sessiz.stepGround(60 * 3))
 const i1b = await info()

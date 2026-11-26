@@ -232,6 +232,9 @@ type Enemy = {
   bodyFlash: () => void
   /** Eğitim gemisi: az can, az hasar, az ganimet. */
   small?: boolean
+  /** Uzay savaşı rolü: avcı (hızlı, yakın), bombacı (uzaktan füze), kalkanlı (önce kalkanı kırılmalı). */
+  role?: 'avci' | 'bombaci' | 'kalkan'
+  bubble?: Mesh | null
 }
 
 type ShotKind = 'bolt' | 'homing' | 'goo' | 'laser' | 'pellet' | 'rocket' | 'plasma' | 'chain'
@@ -561,6 +564,9 @@ class Game {
   pickedTarget: Enemy | null = null
   escortOrder: 'takip' | 'saldir' | 'koru' = 'takip'
   dodgeT = 0
+  /** Uzaktayken kolonine baskın: süre dolmadan inersen dalga olarak savaşırsın, inmezsen üs hasar alır. */
+  raid: { planetId: string; by: OriginId; t: number } | null = null
+  raidT = 300
   dodgeCd = 0
   planets: Planet[] = []
   planetMeshes: Group[] = []
@@ -1143,8 +1149,10 @@ class Game {
     if (scanEdge) this.scan()
     if (this.input.pressed('KeyO')) this.openDiplo()
     this.shipTactics(dt)
+    this.raidTick(dt)
     if (this.input.pressed('KeyP')) this.openPhoto()
-    if (this.layer === 'ship' && this.input.pressed('KeyC')) this.toggleCam()
+    if (this.layer === 'ship' && (this.input.pressed('KeyC') || (this.input.touchCam && !this.camWas))) this.toggleCam()
+    this.camWas = this.input.touchCam
     if (this.input.pressed('KeyN')) this.toggleRadar()
     if (this.layer === 'ship') this.useAbilities(dt)
     else {
@@ -1275,7 +1283,7 @@ class Game {
     this.visual.engineLight.intensity = showPlume ? (this.boosting ? 12 : 5) * throttle : 0
     this.muzzleT -= dt
     const muz = this.visual.muzzle.material as SpriteMaterial
-    this.visual.muzzle.visible = this.muzzleT > 0
+    this.visual.muzzle.visible = this.muzzleT > 0 && !this.visual.cockpit.visible
     muz.opacity = this.muzzleT > 0 ? 0.95 : 0
     this.audio.setThrust(throttle * (this.boosting ? 1.45 : 1))
     if (this.hull < 30 && !this.hullWarned) {
@@ -2434,6 +2442,29 @@ class Game {
     if (arrow) arrow.style.transform = off ? `rotate(${Math.atan2(-y, x) + Math.PI / 2}rad)` : ''
   }
 
+  /** Yayayken üs işareti: kendi üssün "⌂ Üssün", düşman üssü "⚔ Düşman çekirdeği" (her zaman, kenarda okla). */
+  private paintBaseMark() {
+    const el = document.getElementById('base-mark')
+    if (!el) return
+    const planet = this.layer === 'foot' ? this.footPlanet : null
+    const c = planet ? this.colonyHere(planet) : null
+    if (!planet || !c || this.mode !== 'map' || this.photo) {
+      el.classList.add('hidden')
+      return
+    }
+    const spot = this.surfacePos(this.worldDir(c.dir, planet, vQ), planet, 6, vU)
+    const d = spot.distanceTo(this.pos)
+    if (d < 12) {
+      el.classList.add('hidden')
+      return
+    }
+    el.classList.remove('hidden')
+    el.classList.toggle('enemy', !this.mine(c))
+    this.placeMark(el, spot)
+    this.domSet('base-mark-name', this.mine(c) ? (c.kind === 'main' ? 'Ana üssün' : 'Kolonin') : `${factionName(c.owner)} çekirdeği`)
+    this.domSet('base-mark-dist', fmt(d))
+  }
+
   /** Yayayken en yakın kaynak yatağı işareti (görev "kaynak topla" değilse küçük, ◆ zaten onu gösterir). */
   private paintDepositMark() {
     const el = document.getElementById('dep-mark')
@@ -2758,6 +2789,8 @@ class Game {
     if (!host) return
     host.innerHTML = ''
     if (this.mode !== 'map' && this.mode !== 'combat') return
+    // Yerdeyken gökyüzündeki gezegen etiketleri gizli: ekranda yalnız üs, gemi, görev ve yatak işaretleri kalır.
+    if (this.layer === 'foot') return
     const marks: { name: string; pos: Vector3 }[] = []
     for (const planet of this.planets) {
       if (planet.def.heat || planet === this.footPlanet) continue // üstünde durduğun gezegenin etiketi gereksiz
@@ -2967,7 +3000,10 @@ class Game {
     }
     for (const f of planet.features) if (f.obj.visible) push(f.dir, f.r + pad / R)
     const c = this.colonies[planet.def.id]
-    if (c && c.universe === this.universeId) push(c.dir, (CORE_RADIUS + 0.25 * (c.level - 1) + pad) / R)
+    if (c && c.universe === this.universeId) {
+      push(c.dir, (CORE_RADIUS + 0.25 * (c.level - 1) + pad) / R)
+      for (const b of (c.root?.userData.blocks as { dir: Vector3; r: number }[] | undefined) ?? []) push(b.dir, (b.r + pad) / R)
+    }
     dir.copy(vS).applyQuaternion(planet.mesh.quaternion)
   }
 
@@ -3007,8 +3043,9 @@ class Game {
       if (this.bandFired[i] || this.vis < band.at || this.fleets.length >= 3) return
       this.bandFired[i] = true
       if (this.isHome()) {
-        // Ev sistemi öğrenme alanı: gürültü yalnız küçük gemileri çeker.
-        const fleet = this.spawnFleet(Math.min(2, band.n), 0, undefined, 'hunt')
+        // Ev sistemi öğrenme alanı: yalnız çok gürültü (en yüksek eşik) tek küçük gemi çeker.
+        if (i < BANDS.length - 1 || this.fleets.some((f) => f.small)) return
+        const fleet = this.spawnFleet(1, 0, undefined, 'hunt')
         fleet.small = true
         return
       }
@@ -3027,7 +3064,8 @@ class Game {
       }
       const dist = fleet.pos.distanceTo(aim)
       const calm = Boolean(fleet.faction && friendly(this.rel[fleet.faction]))
-      let sees = !calm && (this.vis > 18 || dist < 64)
+      // Ev sistemindeki küçük eğitim gemileri yalnız çok gürültüde ya da çok yakında fark eder; yerdeyken hiç.
+      let sees = !calm && (fleet.small ? (this.vis > 45 || dist < 35) && this.layer === 'ship' : this.vis > 18 || dist < 64)
       if (fleet.scout) {
         // Keşif gemisi avlamaz: gürültülü yaklaşırsan seni fark edip kaçar. Sessiz yaklaşan yakalar.
         fleet.revealed = Math.max(fleet.revealed ?? 0, 2)
@@ -3173,16 +3211,21 @@ class Game {
     vC.crossVectors(vB, WORLD_UP)
     if (vC.lengthSq() < 1e-4) vC.set(1, 0, 0)
     vC.normalize()
-    const scared = e.hull < e.hullMax * 0.34
+    const scared = e.hull < e.hullMax * 0.34 && e.role !== 'avci'
+    // Rolüne göre tercih edilen uzaklık: avcı dibine girer, bombacı uzakta durur, kalkanlı orta mesafede.
+    const near = e.role === 'avci' ? 12 : e.role === 'bombaci' ? 70 : 22
+    const far = e.role === 'avci' ? 40 : e.role === 'bombaci' ? 120 : 74
+    const mid = (near + far) / 2
     if (scared) vD.copy(vB).multiplyScalar(-1).addScaledVector(vC, e.strafe * 1.15)
-    else if (dist > 74) vD.copy(vB).addScaledVector(vC, e.strafe * 0.7)
-    else if (dist < 22) vD.copy(vB).multiplyScalar(-1).addScaledVector(vC, e.strafe)
-    else vD.copy(vC).multiplyScalar(e.strafe).addScaledVector(vB, (dist - 46) * 0.035)
+    else if (dist > far) vD.copy(vB).addScaledVector(vC, e.strafe * 0.7)
+    else if (dist < near) vD.copy(vB).multiplyScalar(-1).addScaledVector(vC, e.strafe)
+    else vD.copy(vC).multiplyScalar(e.strafe).addScaledVector(vB, (dist - mid) * 0.035)
     if (vD.lengthSq() < 1e-6) vD.copy(vB)
     vD.normalize()
     const uniMul = UNIVERSES[this.universeId].enemyMul
-    e.vel.addScaledVector(vD, (40 + e.threat * 6) * uniMul * dt)
-    const maxS = 34 + e.threat * 6
+    const roleSpeed = e.role === 'avci' ? 1.6 : e.role === 'bombaci' ? 0.75 : e.role === 'kalkan' ? 0.85 : 1
+    e.vel.addScaledVector(vD, (40 + e.threat * 6) * uniMul * roleSpeed * dt)
+    const maxS = (34 + e.threat * 6) * roleSpeed
     if (e.vel.length() > maxS) e.vel.setLength(maxS)
     e.vel.multiplyScalar(Math.max(0, 1 - dt * 0.12))
     e.pos.addScaledVector(e.vel, dt)
@@ -3198,11 +3241,18 @@ class Game {
     }
     e.root.quaternion.copy(e.quat)
     this.paintEnemyBar(e)
+    if (e.bubble) {
+      // Kalkanlı: kalkan küresi kalkan bittikçe söner; yavaşça yeniden dolar.
+      const k = e.shieldMax > 0 ? e.shield / e.shieldMax : 0
+      e.bubble.visible = k > 0.02
+      ;(e.bubble.material as MeshBasicMaterial).opacity = 0.1 + 0.25 * k + (e.flashT > 0 ? 0.3 : 0)
+      if (e.flashT <= 0) e.shield = Math.min(e.shieldMax, e.shield + e.shieldMax * 0.04 * dt)
+    }
     e.cool -= dt
     shipForward(e.quat, vE)
     if (e.cool <= 0 && dist < 165 && (e.attack === 'well' || e.attack === 'gate' || vE.dot(vB) > 0.9)) {
       this.enemyShoot(e, dist)
-      const pause = e.attack === 'well' || e.attack === 'gate' ? 5.1 : e.attack === 'homing' ? 2.1 : e.attack === 'goo' ? 2.4 : 1.3
+      const pause = (e.attack === 'well' || e.attack === 'gate' ? 5.1 : e.attack === 'homing' ? 2.1 : e.attack === 'goo' ? 2.4 : 1.3) * (e.role === 'avci' ? 0.55 : e.role === 'bombaci' ? 1.4 : 1)
       e.cool = (pause + Math.random() * 0.6) * (e.giant ? 1.45 : 1) - e.threat * 0.08
     }
   }
@@ -3524,6 +3574,7 @@ class Game {
   ckYaw = 0
   ckPitch = 0
   ckKick = 0
+  ckFire = [0, 0]
 
   /** Kokpit içi canlılık: kumanda kolları dönüşe göre eğilir, eller onlarla gider, ateşte geri teper, düğmeler yanıp söner. */
   private cockpitFx(on: boolean) {
@@ -3547,6 +3598,18 @@ class Game {
       const side = i === 0 ? -1 : 1
       arm.position.set(side * 0.17 - this.ckYaw * 0.03, 0.25 - this.ckPitch * 0.02, -0.56 + this.ckKick * 0.025)
       arm.rotation.set(0.95 + this.ckPitch * 0.12, side * 0.45, -this.ckYaw * 0.25)
+    })
+    const guns = ck.userData.guns as Group[] | undefined
+    const flashes = ck.userData.flashes as Sprite[] | undefined
+    guns?.forEach((gun, i) => {
+      this.ckFire[i] = Math.max(0, this.ckFire[i] - dt * 9)
+      gun.position.z = -0.9 + this.ckFire[i] * 0.06
+      const f = flashes?.[i]
+      if (f) {
+        ;(f.material as SpriteMaterial).opacity = this.ckFire[i]
+        f.scale.setScalar(0.25 + this.ckFire[i] * 0.35)
+        f.material.rotation = Math.random() * 6
+      }
     })
     const buttons = ck.userData.buttons as Mesh[] | undefined
     if (buttons) {
@@ -3676,6 +3739,7 @@ class Game {
     this.paintQuestMark()
     this.paintShipMark()
     this.paintDepositMark()
+    this.paintBaseMark()
     this.paintAttitude()
     if (this.dom.prompt.textContent !== prompt) this.dom.prompt.textContent = prompt
     if (this.toastT > 0) {
@@ -3990,7 +4054,7 @@ class Game {
         ? 'Küçük bir uzaylı gemisi saldırıyor. Vur, düşen ganimeti topla.'
         : this.enemies.some((e) => e.alive && e.giant)
           ? 'Temas. İçlerinde dev bir avcı var.'
-          : 'Temas. Filo üstüne geldi — burada savaş.',
+          : `Temas! ${this.roleSummary()} — Tab ile hedef seç, B ile kaç.`,
     )
   }
 
@@ -4260,7 +4324,7 @@ class Game {
     this.clearLoot()
     this.skirmish = false
     this.homePatrols = 0
-    this.homePatrolT = 0
+    this.homePatrolT = 90
     // Bütün türler baştan dünyada: her biri kendi ev sisteminde karakolla başlar.
     this.seedWorld()
     this.layoutUniverse(homeSystem(this.originId))
@@ -4308,7 +4372,8 @@ class Game {
     }
     for (let i = 0; i < 4; i++) this.spawnFragment(Math.PI / 2 - 0.4 - i * 0.32, this.fragInner + 85 + i * 12, 18 + i * 6)
     for (let i = 0; i < 7; i++) this.spawnFragment()
-    this.homePatrols = 4
+    // Ev sistemi sakin: başta eğitim devriyesi yok (keşif gemisi görevinden sonra en çok bir tane).
+    this.homePatrols = 0
     this.questStart(0, true)
     // İlk görevin brifingi oyun açılınca gelir.
     this.briefPending = 0
@@ -4316,7 +4381,7 @@ class Game {
     this.briefing = false
     this.spawnHomePatrols(this.homePatrols)
     this.tipT = 7
-    if (homePlanet) this.toast(`${homePlanet.def.name}: ev gezegenin. Karakolun kuruldu (sv 1). Etraftaki küçük gemileri avla, ganimetle karakolu büyüt.`)
+    if (homePlanet) this.toast(`${homePlanet.def.name}: ev gezegenin. Üssün kuruldu (sv 1). Sol üstteki görev kartını izle.`)
     this.diskMat.uniforms.uAlpha.value = 1
     this.hideControls()
   }
@@ -4391,6 +4456,14 @@ class Game {
     }
   }
 
+  /** Atölye (kendi üssün sv3+) parça fiyatlarını %15 düşürür. */
+  partCost(tier: number): Cost {
+    const c = tierCost(tier)
+    const shop = Object.values(this.colonies).some((x) => x && this.mine(x) && x.level >= 3)
+    if (!shop) return c
+    return { energy: Math.round(c.energy * 0.85), ore: Math.round(c.ore * 0.85), crystal: Math.round(c.crystal * 0.85) }
+  }
+
   private canPay(c: Cost) {
     return this.energy >= c.energy && this.ore >= c.ore && this.crystal >= c.crystal
   }
@@ -4409,7 +4482,7 @@ class Game {
     const opts = nextOptions(this.originId, id, level)
     const part = opts.find((o) => o.id === partId) ?? opts[0]
     if (!part) return false
-    const cost = tierCost(level + 1)
+    const cost = this.partCost(level + 1)
     if (!this.canPay(cost)) {
       this.toast(`Yetersiz kaynak: ${this.costText(cost)}`)
       return false
@@ -4523,7 +4596,7 @@ class Game {
       list.append(done)
       return
     }
-    const cost = tierCost(level + 1)
+    const cost = this.partCost(level + 1)
     const row = document.createElement('div')
     row.className = 'up-cards'
     for (const part of opts) {
@@ -4661,12 +4734,14 @@ class Game {
     el.classList.remove('hidden')
     el.style.left = `${(p.x * 0.5 + 0.5) * 100}%`
     el.style.top = `${(-p.y * 0.5 + 0.5) * 100}%`
+    el.classList.toggle('picked', target === this.pickedTarget)
+    el.dataset.role = target.role === 'avci' ? 'AVCI' : target.role === 'bombaci' ? 'BOMBACI' : target.role === 'kalkan' ? (target.shield > 0 ? 'KALKANLI' : 'KALKAN KIRILDI') : target.giant ? 'DEV' : ''
   }
 
   private updateLod() {
     for (const planet of this.planets) {
       const dist = this.pos.distanceTo(planet.pos)
-      if (planet.village) planet.village.visible = dist < Math.max(420, planet.def.radius * 4)
+      if (planet.village) planet.village.visible = dist < Math.max(420, planet.def.radius * 4) && !this.colonies[planet.def.id]
     }
     for (const poi of this.pois) {
       poi.getWorldPosition(vA)
@@ -4708,7 +4783,8 @@ class Game {
       hut.quaternion.setFromRotationMatrix(new Matrix4().makeBasis(tangent, up, bit))
       hut.position.copy(up).multiplyScalar(def.radius - 0.15)
       huts.push(up.clone())
-      hut.scale.setScalar(Math.max(2.2, def.radius / 36))
+      // Yerli evleri insan boyunda: üs çekirdeğinin yanında dev görünüp onu gizlemesin.
+      hut.scale.setScalar(2.2)
       g.add(hut)
       if (i < 4) {
         const look = nativeLook(def)
@@ -4827,9 +4903,22 @@ class Game {
       const human = !small && humanHunt && attack !== 'well' && attack !== 'gate' && i % 3 === 0
       if (human) attack = 'bolt'
       const giant = !small && n >= 4 && i >= n - 2
+      // Roller: normal gemilerin bir kısmı avcı, bombacı ya da kalkanlı olur.
+      const role: Enemy['role'] = small || giant || attack === 'well' || attack === 'gate' ? undefined : (['avci', 'bombaci', 'kalkan'] as const)[i % 3]
+      if (role === 'bombaci') attack = 'homing'
+      if (role === 'avci') attack = 'bolt'
       const visual = human ? buildHumanFighter() : buildCuteAlien(attack === 'well' || attack === 'gate' ? 4 : i % 4, 1)
-      const scale = small ? 0.8 : giant ? (human ? 2.7 : 3.35) : human ? 1 : 1.05
+      const scale = (small ? 0.8 : giant ? (human ? 2.7 : 3.35) : human ? 1 : 1.05) * (role === 'avci' ? 0.85 : role === 'bombaci' ? 1.25 : role === 'kalkan' ? 1.15 : 1)
       visual.root.scale.setScalar(scale)
+      if (role === 'avci') visual.bodyMat.emissive.set(0x8a1a10)
+      if (role === 'bombaci') visual.bodyMat.emissive.set(0x8a5a10)
+      let bubble: Mesh | null = null
+      if (role === 'kalkan') {
+        const bm = new MeshBasicMaterial({ color: new Color(0x6ac8ff).multiplyScalar(1.3), transparent: true, opacity: 0.28, blending: AdditiveBlending, depthWrite: false })
+        bm.toneMapped = false
+        bubble = new Mesh(new SphereGeometry(2.1 / scale, 20, 14), bm)
+        visual.root.add(bubble)
+      }
       if (this.universeId === 'kizil' && !human) visual.bodyMat.color.set(0x6a2418)
       if (this.universeId === 'soluk' && !human) visual.bodyMat.emissive.set(0x123a4a)
       let weak: Mesh | null = null
@@ -4850,8 +4939,8 @@ class Game {
         bar.userData.ctx = built.ctx
         bar.userData.tex = built.tex
       }
-      const hull = small ? 18 : (34 + threat * 10) * (giant ? scale * 2.15 : 1)
-      const shield = small ? 0 : (12 + threat * 6) * (giant ? 2.3 : 1)
+      const hull = (small ? 18 : (34 + threat * 10) * (giant ? scale * 2.15 : 1)) * (role === 'avci' ? 0.7 : role === 'bombaci' ? 1.2 : 1)
+      const shield = small ? 0 : (12 + threat * 6) * (giant ? 2.3 : 1) * (role === 'kalkan' ? 3.2 : role === 'avci' ? 0.5 : 1)
       const e: Enemy = {
         root: visual.root,
         pos: spots[i % spots.length].clone().add(vH.set(0, 0, 46)).add(center),
@@ -4875,6 +4964,8 @@ class Game {
         weak,
         bar,
         small,
+        role,
+        bubble,
         bodyFlash: () => {
           visual.bodyMat.emissiveIntensity = 1.8
           window.setTimeout(() => {
@@ -5296,6 +5387,11 @@ class Game {
     must<HTMLButtonElement>('diplo-x').addEventListener('click', () => must<HTMLElement>('diplo').classList.add('hidden'))
     must<HTMLButtonElement>('orders-x').addEventListener('click', () => this.toggleOrders(false))
     must<HTMLButtonElement>('brief-go').addEventListener('click', () => this.closeBriefing())
+    // Dokunmatik "⋯": ikincil düğmeleri aç/kapa.
+    must<HTMLButtonElement>('touch-more').addEventListener('click', () => {
+      document.body.classList.toggle('more-open')
+      this.audio.ui()
+    })
     must<HTMLElement>('diplo').addEventListener('click', (e) => {
       if (e.target === e.currentTarget) must<HTMLElement>('diplo').classList.add('hidden')
     })
@@ -6104,7 +6200,7 @@ class Game {
       this.transitionLock = 2.8
       this.snapCamera = true
       this.toast(this.isHome() ? `${uni.name}. Ev sistemi — kalkanın burada çabuk döner.` : `${uni.name}. ${uni.line}`)
-      if (this.isHome()) this.spawnHomePatrols(this.homePatrols)
+      if (this.isHome() && this.tutorialAt('home')) this.spawnHomePatrols(Math.min(1, this.homePatrols))
       if (this.foreignHome(to)) this.raiseAmbush()
       this.mirrorRun()
     })
@@ -6362,6 +6458,57 @@ class Game {
     requestAnimationFrame(fade)
   }
 
+  /** Baskın zamanlayıcısı: eğitim karakol adımına gelince, ara sıra düşman bir ırk kolonilerinden birine saldırır. */
+  private raidTick(dt: number) {
+    if (this.raid) {
+      this.raid.t -= dt
+      const c = this.colonies[this.raid.planetId]
+      if (!c || !this.mine(c)) {
+        this.raid = null
+        return
+      }
+      if (this.raid.t <= 0) {
+        // Yetişemedin: üs kendi gücüyle savunur; güçlüyse püskürtür, zayıfsa hasar alır ya da düşer.
+        const by = this.raid.by
+        this.raid = null
+        const def = c.level * 2 + c.turrets.length
+        const atk = 3 + Math.random() * 6
+        if (def >= atk) {
+          this.feed('🛡', `${c.planetName} saldırıyı kendi püskürttü`, 'good')
+          this.toast(`${c.planetName}: taretlerin ve halkın ${factionName(by)} saldırısını püskürttü.`)
+        } else {
+          c.hull -= c.hullMax * 0.45
+          c.pop = Math.max(1, c.pop - 2)
+          if (c.hull <= 0 && c.kind !== 'main') {
+            this.flipOwner(c, this.planetOf(c), by)
+            this.feed('⚠', `${c.planetName} düştü: ${factionName(by)} aldı`, 'bad')
+            this.toast(`⚠ ${c.planetName} kolonini ${factionName(by)} ele geçirdi. Geri almak için ekibinle saldır.`)
+          } else {
+            c.hull = Math.max(1, c.hull)
+            this.feed('⚠', `${c.planetName} hasar aldı`, 'bad')
+            this.toast(`${c.planetName} saldırıda hasar aldı ve nüfus kaybetti. Taret ekle, üssü büyüt.`)
+          }
+        }
+      }
+      return
+    }
+    if (!this.tutorialAt('capture')) return
+    this.raidT -= dt
+    if (this.raidT > 0) return
+    this.raidT = 240 + Math.random() * 240
+    const mineList = Object.values(this.colonies).filter((c) => c && this.mine(c) && !this.standingOn(c.planetId))
+    const foes = ORIGINS.map((o) => o.id).filter((id) => id !== this.originId && !friendly(this.rel[id]))
+    if (!mineList.length || !foes.length) return
+    const c = mineList[Math.floor(Math.random() * mineList.length)]
+    const by = foes[Math.floor(Math.random() * foes.length)]
+    this.raid = { planetId: c.planetId, by, t: 75 }
+    this.route = { kind: 'planet', id: c.planetId, system: c.universe }
+    this.routeByQuest = false
+    this.audio.warning()
+    this.feed('⚠', `${c.planetName} saldırı altında!`, 'bad')
+    this.toast(`⚠ ${factionName(by)} ${c.planetName} kolonine saldırıyor! 75 sn içinde in ve savun — rota kuruldu.`)
+  }
+
   /** Uzay savaşı taktikleri: Tab hedef seç, B kaçınma takla (kısa dokunulmazlık), 1–3 eşlik gemisi emirleri. */
   private shipTactics(dt: number) {
     this.dodgeCd = Math.max(0, this.dodgeCd - dt)
@@ -6388,7 +6535,17 @@ class Game {
   }
 
   dodgeWas = false
+  camWas = false
   dodgeDir = 1
+
+  /** Savaş başında düşman rollerinin kısa özeti. */
+  private roleSummary() {
+    const n = (r: string) => this.enemies.filter((e) => e.alive && e.role === r).length
+    const parts = [n('avci') ? `${n('avci')} avcı (hızlı, yakın)` : '', n('bombaci') ? `${n('bombaci')} bombacı (uzaktan füze)` : '', n('kalkan') ? `${n('kalkan')} kalkanlı (önce kalkanı kır)` : '']
+    const giants = this.enemies.filter((e) => e.alive && e.giant).length
+    if (giants) parts.push(`${giants} dev`)
+    return parts.filter(Boolean).join(', ') || 'Filo üstüne geldi'
+  }
 
   private cycleTarget() {
     const alive = this.enemies.filter((e) => e.alive)
@@ -6449,6 +6606,18 @@ class Game {
     shipRight(this.quat, vB)
     shipUp(this.quat, vC)
     vD.copy(this.pos).addScaledVector(vA, 1.2).addScaledVector(vB, this.muzzleSide * 0.32)
+    const ck = this.visual.cockpit
+    if (ck.visible) {
+      // Kokpitte mermi o yandaki toptan çıkar; namlu parlar, top geri teper.
+      const guns = ck.userData.guns as Group[] | undefined
+      const gi = this.muzzleSide < 0 ? 0 : 1
+      if (guns?.[gi]) {
+        guns[gi].updateWorldMatrix(true, false)
+        vD.set(0, 0, -0.62).applyMatrix4(guns[gi].matrixWorld)
+        this.ckFire[gi] = 1
+      }
+      this.trauma = Math.min(0.35, this.trauma + 0.04)
+    }
     // Nişan yardımı: bakış yönüne ~9° içindeki en yakın düşmana, hareketini önceden hesaplayarak yönel.
     const aim = this.shotAssist(vA)
     if (aim) vA.copy(aim)
@@ -6731,6 +6900,23 @@ class Game {
       return false
     }
     vA.copy(this.pos).sub(planet.pos).normalize()
+    // Üssü olan gezegende iniş noktası üssün yanı: kendi üssünde 18 birim, düşman üssünde 45 birim ötesi.
+    const landC = this.colonies[planet.def.id]
+    if (landC && landC.universe === this.universeId) {
+      const R = planet.def.radius
+      const core = this.worldDir(landC.dir, planet, vD)
+      const want = this.mine(landC) ? 18 : 45
+      const gap = this.arc(core, vA, R)
+      if (gap > want) {
+        vE.copy(vA)
+        vA.copy(core)
+        this.slideToward(vA, vE, want, R)
+      } else if (gap < 14) {
+        // Tam çekirdeğin üstüne inme: yanına (meydanın kenarına) in.
+        if (gap < 0.5) this.offsetDir(core, 0.6, 14, R, vA)
+        else this.slideAway(vA, core, 14 - gap, R)
+      }
+    }
     vB.crossVectors(WORLD_UP, vA)
     if (vB.lengthSq() < 1e-4) vB.set(1, 0, 0)
     vB.normalize()
@@ -7367,6 +7553,74 @@ class Game {
       this.stand(t.root, t.dir, R)
       root.add(t.root)
     }
+    this.buildDistrict(c, planet, root)
+    // Üs kurulan gezegende yerli köyü (eski evler) görünmez: üs yerleşimin kendisi olur.
+    if (planet.village) planet.village.visible = false
+  }
+
+  /** Üssün yan yapıları: çekirdeğin çevresinde, ondan küçük. Seviye arttıkça çoğalır.
+   *  Evler nüfus, kışla (sv2+) ekip sınırı, atölye (sv3+) parça indirimi, gözcü kulesi (sv4+) taret menzili. */
+  static districtOf(level: number) {
+    const out: { kind: 'ev' | 'kisla' | 'atolye' | 'gozcu'; name: string }[] = []
+    const houses = Math.min(6, 1 + level)
+    for (let i = 0; i < houses; i++) out.push({ kind: 'ev', name: 'Yaşam evi' })
+    if (level >= 2) out.push({ kind: 'kisla', name: 'Kışla' })
+    if (level >= 3) out.push({ kind: 'atolye', name: 'Atölye' })
+    if (level >= 4) out.push({ kind: 'gozcu', name: 'Gözcü kulesi' })
+    return out
+  }
+
+  private buildDistrict(c: Colony, planet: Planet, root: Group) {
+    const R = planet.def.radius
+    const list = Game.districtOf(c.level)
+    const blocks: { dir: Vector3; r: number }[] = []
+    root.userData.blocks = blocks
+    const form = originLook(c.owner).form
+    const tint = originLook(c.owner).body ?? 0x8a8f9c
+    list.forEach((b, i) => {
+      const bearing = (i / list.length) * Math.PI * 2 + 0.4
+      const ring = b.kind === 'ev' ? 15 + (i % 2) * 3 : 13
+      const dir = this.offsetDir(c.dir, bearing, ring, R, new Vector3())
+      blocks.push({ dir, r: b.kind === 'ev' ? 2.2 : 2.6 })
+      let g: Group
+      if (b.kind === 'ev') {
+        g = buildDwelling(form, tint, i)
+        g.scale.setScalar(1.35)
+      } else {
+        g = new Group()
+        const hall = buildDwelling(form, tint, i + 7)
+        hall.scale.setScalar(1.6)
+        g.add(hall)
+        const neon = new MeshBasicMaterial({ color: new Color(b.kind === 'kisla' ? 0xff6a4a : b.kind === 'atolye' ? 0x6af0ff : 0xffd76a).multiplyScalar(1.6) })
+        neon.toneMapped = false
+        if (b.kind === 'kisla') {
+          const pole = new Mesh(new CylinderGeometry(0.06, 0.06, 5, 6), new MeshStandardMaterial({ color: 0x3a3f48 }))
+          pole.position.set(1.8, 2.5, 0)
+          const flag = new Mesh(new BoxGeometry(1.2, 0.7, 0.04), neon)
+          flag.position.set(2.4, 4.5, 0)
+          g.add(pole, flag)
+        } else if (b.kind === 'atolye') {
+          const gear = new Mesh(new TorusGeometry(0.8, 0.14, 6, 12), neon)
+          gear.position.set(0, 4.2, 0)
+          gear.name = 'spin'
+          g.add(gear)
+        } else {
+          const tower = new Mesh(new CylinderGeometry(0.3, 0.5, 7, 6), new MeshStandardMaterial({ color: 0x4a4f58, metalness: 0.4 }))
+          tower.position.set(1.6, 3.5, 0)
+          const lamp = new Mesh(new SphereGeometry(0.45, 10, 8), neon)
+          lamp.position.set(1.6, 7.2, 0)
+          g.add(tower, lamp)
+        }
+      }
+      g.position.copy(dir).multiplyScalar(R - 0.2)
+      vH.copy(AXIS_Y).cross(dir)
+      if (vH.lengthSq() < 1e-6) vH.set(1, 0, 0)
+      vH.normalize()
+      vI.crossVectors(vH, dir).normalize()
+      g.quaternion.setFromRotationMatrix(basis.makeBasis(vH, dir, vI))
+      g.name = `bina-${b.kind}`
+      root.add(g)
+    })
   }
 
   private attachColonies() {
@@ -8102,7 +8356,7 @@ class Game {
 
   private startWave(c: Colony) {
     c.state = 'wave'
-    c.attacker = this.pickAttacker(c)
+    c.attacker = c.attacker ?? this.pickAttacker(c)
     c.queue = waveRoster(c.wave + 1)
     c.spawnT = 0.6
     this.waveBearing = Math.random() * Math.PI * 2
@@ -8633,7 +8887,9 @@ class Game {
       const td = this.worldDir(t.dir, planet, vJ)
       this.surfacePos(td, planet, 1.7, vK)
       let target: Unit | null = null
-      let best = TURRET_RANGE
+      // Gözcü kulesi (sv4+) taret menzilini %25 artırır.
+      const range = TURRET_RANGE * (c.level >= 4 ? 1.25 : 1)
+      let best = range
       for (const u of this.units) {
         if (!u.alive || u.faction === c.owner) continue
         const d = vK.distanceTo(u.root.position)
@@ -8645,7 +8901,7 @@ class Game {
       let atPlayer = false
       if (!mine) {
         const d = vK.distanceTo(this.pos)
-        if (d < Math.min(best, TURRET_RANGE * 0.8)) {
+        if (d < Math.min(best, range * 0.8)) {
           best = d
           target = null
           atPlayer = true
@@ -8790,7 +9046,8 @@ class Game {
     }
     const heroes = pool.filter((u) => isHero(u.kind)).slice(0, SQUAD_HEROES)
     const minions = pool.filter((u) => !isHero(u.kind))
-    const room = Math.min(SQUAD_MAX, pool.length - 1)
+    // Kışla (üs sv2+) ekip sınırını 2 artırır.
+    const room = Math.min(SQUAD_MAX + (c.level >= 2 ? 2 : 0), pool.length - 1)
     const pick = [...heroes, ...minions].slice(0, room)
     for (const u of pick) {
       u.squad = true
@@ -8917,6 +9174,14 @@ class Game {
     c.attacker = null
     c.countdown = Math.max(c.countdown, 12)
     c.besieged = false
+    if (this.raid && this.raid.planetId === c.planetId && this.mine(c)) {
+      // Baskına yetiştin: saldırganlar hemen iner.
+      const by = this.raid.by
+      this.raid = null
+      c.countdown = 3
+      c.attacker = by
+      this.toast(`Yetiştin! ${factionName(by)} saldırısı başlıyor; savun.`)
+    }
     if (!this.mine(c)) {
       // Düşman üssü tüm birlikleriyle hazır bekler.
       const n = Math.floor(Math.min(c.pop, this.capOf(c)))
@@ -8989,6 +9254,9 @@ class Game {
     must<HTMLElement>('colony-flag').classList.toggle('hidden', this.colonyCount() === 0)
     this.domSet('res-chip', `⛏ ${this.ore} · ◆ ${this.crystal}`)
     must<HTMLElement>('silent-flag').classList.toggle('hidden', !(this.silent && this.layer === 'ship'))
+    const raidEl = must<HTMLElement>('raid-flag')
+    raidEl.classList.toggle('hidden', !this.raid)
+    if (this.raid) this.domSet('raid-flag', `⚠ ${this.colonies[this.raid.planetId]?.planetName ?? ''} saldırı altında · ${Math.ceil(this.raid.t)} sn`)
     const crew = this.squadSize()
     this.domSet('squad-flag', `Ekip ${crew}`)
     must<HTMLElement>('squad-flag').classList.toggle('hidden', crew === 0)
@@ -9024,7 +9292,10 @@ class Game {
       return
     }
     const store = this.mine(c) && c.level < MAX_LEVEL && c === this.homeColony() ? ` · Ganimet deposu ${Math.floor(c.store ?? 0)}/${UPGRADE_COST[c.level + 1]}` : ''
-    this.domSet('base-line', `${line} · Nüfus ${Math.floor(c.pop)}/${cap} · Taret ${c.turrets.length}/${turretSlots(c.level)}${store}`)
+    const d = Game.districtOf(c.level)
+    const houses = d.filter((b) => b.kind === 'ev').length
+    const extra = [c.level >= 2 ? 'Kışla +2 ekip' : '', c.level >= 3 ? 'Atölye −%15 parça' : '', c.level >= 4 ? 'Gözcü +%25 menzil' : ''].filter(Boolean).join(' · ')
+    this.domSet('base-line', `${line} · Nüfus ${Math.floor(c.pop)}/${cap} · Taret ${c.turrets.length}/${turretSlots(c.level)}${store} · ${houses} ev${extra ? ' · ' + extra : ''}`)
   }
 
   /* ---------- Botlar: diğer türlerin üsleri ---------- */
@@ -9129,8 +9400,8 @@ class Game {
     this.homePatrolT -= dt
     const live = this.fleets.filter((f) => f.small).length + this.enemies.filter((e) => e.alive && e.small).length
     this.homePatrols = this.fleets.filter((f) => f.small).length
-    if (live >= 3 || this.homePatrolT > 0) return
-    this.homePatrolT = 30
+    if (live >= 1 || this.homePatrolT > 0) return
+    this.homePatrolT = 90
     this.spawnHomePatrols(1)
     this.homePatrols++
   }
@@ -9240,14 +9511,14 @@ class Game {
     let best: Cost | null = null
     for (const sl of SLOTS) {
       if (this.up[sl.id] >= 5) continue
-      const c = tierCost(this.up[sl.id] + 1)
+      const c = this.partCost(this.up[sl.id] + 1)
       if (best === null || c.energy < best.energy) best = c
     }
     return best
   }
 
   private canUpgrade() {
-    return SLOTS.some((sl) => this.up[sl.id] < 5 && this.canPay(tierCost(this.up[sl.id] + 1)))
+    return SLOTS.some((sl) => this.up[sl.id] < 5 && this.canPay(this.partCost(this.up[sl.id] + 1)))
   }
 
   /** Gemi geliştirme yalnız yüzeyde, park edilmiş geminin yanında yapılır. */
@@ -9914,6 +10185,39 @@ class Game {
         return game.escortOrder
       },
       musicState: () => ({ music: Boolean(game.audio.music), on: game.audio.musicOn }),
+      district: (id: string) => {
+        const c = game.colonies[id]
+        if (!c?.root) return null
+        return c.root.children.filter((o) => o.name.startsWith('bina-')).map((o) => o.name)
+      },
+      baseMark: () => !document.getElementById('base-mark')?.classList.contains('hidden'),
+      coreGap: () => {
+        const planet = game.footPlanet
+        const c = planet ? game.colonyHere(planet) : null
+        if (!planet || !c) return -1
+        return game.arc(game.worldDir(c.dir, planet, new Vector3()), game.pos.clone().sub(planet.pos).normalize(), planet.def.radius)
+      },
+      villageVisible: (id: string) => Boolean(game.planets.find((p) => p.def.id === id)?.village?.visible),
+      partCost: (tier: number) => game.partCost(tier),
+      forceRaid: () => {
+        game.raidT = 0
+        game.raidTick(0.016)
+        return game.raid ? { ...game.raid } : null
+      },
+      raidInfo: () => (game.raid ? { ...game.raid } : null),
+      spawnTrainers: (n: number) => {
+        game.spawnHomePatrols(n)
+        game.homePatrols += n
+      },
+      homeSmallFleets: () => game.fleets.filter((f) => f.small).length,
+      roles: () => game.enemies.filter((e) => e.alive).map((e) => e.role ?? (e.giant ? 'dev' : 'normal')),
+      cockpitFire: () => {
+        game.camMode = 'cockpit'
+        game.applyPresentation()
+        game.firePrimary()
+        return [...game.ckFire]
+      },
+      beaconCount: () => document.querySelectorAll('#beacons > *').length,
       tutorial: (gates: boolean, brief: boolean) => {
         game.testGates = gates
         game.testBrief = brief
@@ -10570,6 +10874,8 @@ class Game {
         const near = game.nearestFleet(10000)
         if (!near) return false
         const small = Boolean(near.fleet.small)
+        // Temas: filo oyuncunun önüne alınır (gerçek oyunda filo yaklaşınca başlar).
+        near.fleet.pos.copy(game.pos).addScaledVector(new Vector3(0, 0, -1).applyQuaternion(game.quat), 30)
         game.beginCombat(near.fleet)
         return small
       },
