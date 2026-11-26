@@ -19,21 +19,21 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: sessiz-yorunge-v8
+        working-directory: .
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: sessiz-yorunge-v8/package-lock.json
+          cache-dependency-path: package-lock.json
       - run: npm ci
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
       - run: npm run build -- --base=./
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: sessiz-yorunge-v8/dist
+          path: dist
   deploy:
     needs: build
     runs-on: ubuntu-latest
