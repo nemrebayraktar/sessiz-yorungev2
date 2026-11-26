@@ -7,6 +7,7 @@ export type Settings = {
   stickSide: 'left' | 'right'
   invert: boolean
   guide: boolean
+  music: boolean
 }
 
 export type SaveData = {
@@ -22,7 +23,7 @@ const defaults = (): SaveData => ({
   best: 0,
   wins: 0,
   bestWave: 0,
-  settings: { easy: false, volume: 0.72, sens: 1, stickDead: 0.18, stickSens: 1, stickSide: 'left', invert: false, guide: true },
+  settings: { easy: false, volume: 0.72, sens: 1, stickDead: 0.18, stickSens: 1, stickSide: 'left', invert: false, guide: true, music: true },
 })
 
 function clamp(n: number, a: number, b: number) {
@@ -49,6 +50,7 @@ export function loadSave(): SaveData {
         stickSide: s?.stickSide === 'right' ? 'right' : 'left',
         invert: Boolean(s?.invert),
         guide: s?.guide === false ? false : true,
+        music: s?.music === false ? false : true,
       },
     }
   } catch {

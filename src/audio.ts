@@ -1,4 +1,9 @@
+import { Music } from './music'
+
 export class AudioBus {
+  music: Music | null = null
+  musicOn = true
+  private musicTheme = 'gunes'
   private ctx: AudioContext | null = null
   private master: GainNode | null = null
   private thrustGain: GainNode | null = null
@@ -71,9 +76,33 @@ export class AudioBus {
       bp.connect(this.thrustGain)
       this.thrustGain.connect(this.master)
       src.start()
+      // Özgün uyarlanır müzik (sistem temaları + savaş katmanı).
+      this.music = new Music(ctx, this.master, buf)
+      this.music.enabled = this.musicOn
+      this.music.setTheme(this.musicTheme)
+      this.music.setVolume(1)
+      this.music.start()
     } catch {
       this.failed = true
       this.ctx = null
+    }
+  }
+
+  setMusicTheme(id: string) {
+    if (id === this.musicTheme) return
+    this.musicTheme = id
+    this.music?.setTheme(id)
+  }
+
+  setMusicFight(level: number) {
+    this.music?.setFight(level)
+  }
+
+  setMusicOn(on: boolean) {
+    this.musicOn = on
+    if (this.music) {
+      this.music.enabled = on
+      this.music.setVolume(1)
     }
   }
 
@@ -119,8 +148,71 @@ export class AudioBus {
   }
 
   laser(enemy = false) {
-    if (enemy) this.tone(240 + Math.random() * 40, 0.11, 0, 'sawtooth', 0.035)
-    else this.tone(760 + Math.random() * 80, 0.07, 0, 'square', 0.03)
+    // Gerçekçi "piyuv": hızla düşen perde + kısa tıslama.
+    if (enemy) {
+      this.sweep(520 + Math.random() * 60, 140, 0.16, 'sawtooth', 0.045)
+      this.noiseHit(2400, 1.5, 0.05, 0.03, 'highpass')
+    } else {
+      this.sweep(1500 + Math.random() * 120, 300, 0.11, 'square', 0.03)
+      this.sweep(900, 180, 0.09, 'sine', 0.035)
+      this.noiseHit(3200, 1.2, 0.04, 0.025, 'highpass')
+    }
+  }
+
+  /** Hayvansı ses: testere dişi kaynak + nefes gürültüsü, ünlü biçimlendiricilerden (formant) geçer.
+   *  Perde konturu, titreme (vibrato) ve pürüz (jitter) canlı bir ses verir. */
+  creature(pitch: number, dur: number, formants: number[], gain: number, rough = 0.3, end = 0.7, delay = 0) {
+    if (!this.ctx || !this.master || !this.noise || this.volume <= 0.001) return
+    const ctx = this.ctx
+    const t = this.now() + delay
+    const out = ctx.createGain()
+    out.gain.setValueAtTime(0.0008, t)
+    out.gain.exponentialRampToValueAtTime(Math.max(0.001, gain * this.volume), t + Math.min(0.05, dur * 0.2))
+    out.gain.setValueAtTime(Math.max(0.001, gain * this.volume * 0.8), t + dur * 0.6)
+    out.gain.exponentialRampToValueAtTime(0.0008, t + dur)
+    out.connect(this.master)
+    const src = ctx.createOscillator()
+    src.type = 'sawtooth'
+    src.frequency.setValueAtTime(pitch * 0.9, t)
+    src.frequency.linearRampToValueAtTime(pitch * 1.08, t + dur * 0.25)
+    src.frequency.exponentialRampToValueAtTime(Math.max(30, pitch * end), t + dur)
+    const lfo = ctx.createOscillator()
+    const lg = ctx.createGain()
+    lfo.frequency.value = 5 + Math.random() * 4
+    lg.gain.value = pitch * 0.04
+    lfo.connect(lg)
+    lg.connect(src.frequency)
+    const jit = ctx.createOscillator()
+    const jg = ctx.createGain()
+    jit.type = 'square'
+    jit.frequency.value = 23 + Math.random() * 14
+    jg.gain.value = pitch * rough * 0.12
+    jit.connect(jg)
+    jg.connect(src.frequency)
+    const breath = ctx.createBufferSource()
+    breath.buffer = this.noise
+    const bg = ctx.createGain()
+    bg.gain.value = 0.25 + rough * 0.6
+    breath.connect(bg)
+    for (const [i, f] of formants.entries()) {
+      const bp = ctx.createBiquadFilter()
+      bp.type = 'bandpass'
+      bp.frequency.setValueAtTime(f, t)
+      bp.frequency.linearRampToValueAtTime(f * (0.85 + Math.random() * 0.3), t + dur)
+      bp.Q.value = 6 + i * 2
+      const fg = ctx.createGain()
+      fg.gain.value = 1 / (i + 1)
+      src.connect(bp)
+      bg.connect(bp)
+      bp.connect(fg)
+      fg.connect(out)
+    }
+    for (const n of [src, lfo, jit]) {
+      n.start(t)
+      n.stop(t + dur + 0.05)
+    }
+    breath.start(t, Math.random())
+    breath.stop(t + dur + 0.05)
   }
 
   collect() {
@@ -145,6 +237,10 @@ export class AudioBus {
 
   boom() {
     if (!this.ctx || !this.master || !this.noise || this.volume <= 0.001) return
+    // Katmanlı patlama: derin vuruş + çatırtı + uzayan gürleme.
+    this.sweep(120, 38, 0.6, 'sine', 0.12)
+    this.noiseHit(3000, 0.7, 0.18, 0.08, 'highpass')
+    this.noiseHit(400, 0.6, 1.1, 0.07, 'lowpass', 0.06)
     const t = this.ctx.currentTime
     const src = this.ctx.createBufferSource()
     src.buffer = this.noise
@@ -164,7 +260,16 @@ export class AudioBus {
   }
 
   hit(shield: boolean, gain = 1) {
-    this.tone(shield ? 420 : 140, shield ? 0.08 : 0.14, 0, shield ? 'triangle' : 'sawtooth', (shield ? 0.04 : 0.06) * gain)
+    if (shield) {
+      // Kalkan: elektrikli vızıltı + çınlama.
+      this.sweep(900, 420, 0.12, 'triangle', 0.04 * gain)
+      this.noiseHit(5000, 3, 0.08, 0.04 * gain)
+    } else {
+      // Gövde: metal ezilmesi.
+      this.noiseHit(900, 1.4, 0.2, 0.09 * gain)
+      this.sweep(160, 70, 0.22, 'sawtooth', 0.05 * gain)
+      this.noiseHit(4200, 8, 0.12, 0.03 * gain, 'bandpass', 0.02)
+    }
   }
 
   /* ---------- Irka özel sesler (sentez) ---------- */
@@ -212,7 +317,7 @@ export class AudioBus {
   }
 
   /** Perde kaydıran ton (cıvıltı / homurtu / çan). */
-  private sweep(from: number, to: number, dur: number, type: OscillatorType, gain: number, delay = 0, vibrato = 0) {
+  sweep(from: number, to: number, dur: number, type: OscillatorType, gain: number, delay = 0, vibrato = 0) {
     if (!this.ctx || !this.master || this.volume <= 0.001) return
     const t = this.now() + delay
     const o = this.ctx.createOscillator()
@@ -257,12 +362,11 @@ export class AudioBus {
     const amp = 0.05 * gain * k
     switch (v.kind) {
       case 'chirp':
-        this.sweep(pitch, pitch * (kind === 'die' ? 0.4 : 1.6), dur, 'sine', amp)
-        this.sweep(pitch * 1.5, pitch * 2.2, dur * 0.6, 'triangle', amp * 0.4, dur * 0.3)
+        this.creature(pitch, dur, [1200, 2600, 3800], amp * 1.6, 0.2, kind === 'die' ? 0.4 : 1.5)
+        this.sweep(pitch * 1.5, pitch * 2.2, dur * 0.6, 'triangle', amp * 0.3, dur * 0.3)
         break
       case 'growl':
-        this.sweep(pitch, pitch * 0.7, dur, 'sawtooth', amp * 0.7, 0, pitch * 0.25)
-        this.noiseHit(pitch * 3, 2, dur, amp * 0.6)
+        this.creature(pitch * 0.8, dur * 1.3, [420, 900, 2300], amp * 2.2, 0.8, 0.6)
         break
       case 'chime':
         for (const [i, m] of [1, 2.01, 3.02].entries()) this.sweep(pitch * m, pitch * m * (kind === 'die' ? 0.6 : 1.02), dur * (1.4 - i * 0.3), 'sine', amp * (0.8 - i * 0.2), i * 0.03)
@@ -275,8 +379,9 @@ export class AudioBus {
         this.sweep(pitch, pitch * 1.3, dur * 0.6, 'triangle', amp * 0.5)
         break
       case 'rock':
-        this.noiseHit(pitch * 2, 1.2, dur * 1.3, amp * 1.4, 'lowpass')
-        this.sweep(pitch, pitch * 0.6, dur, 'square', amp * 0.35)
+        // Golem: göğüsten gelen derin, taşlı bir böğürtü.
+        this.creature(pitch * 0.6, dur * 1.5, [220, 520, 1200], amp * 2.4, 1, 0.5)
+        this.noiseHit(pitch * 2, 1.2, dur * 1.3, amp * 1.2, 'lowpass')
         break
       case 'bell':
         this.sweep(pitch, pitch, dur * 1.8, 'sine', amp * 0.9)
@@ -288,12 +393,12 @@ export class AudioBus {
         this.sweep(pitch, pitch * 0.8, dur, 'square', amp * 0.4)
         break
       case 'roar':
-        this.sweep(pitch, pitch * 0.6, dur * 1.3, 'sawtooth', amp * 0.8, 0, pitch * 0.4)
-        this.noiseHit(pitch * 2.5, 1, dur * 1.2, amp * 0.9, 'lowpass')
+        this.creature(pitch * 0.7, dur * 1.6, [300, 700, 1800], amp * 2.6, 0.9, 0.55)
+        this.noiseHit(pitch * 2.5, 1, dur * 1.2, amp * 0.6, 'lowpass')
         break
       default:
-        this.sweep(pitch, pitch * 0.85, dur, 'triangle', amp)
-        this.noiseHit(pitch * 2, 3, dur * 0.7, amp * 0.5)
+        // İnsansı: "hah!/ah" ünlüsü.
+        this.creature(pitch, dur * 1.1, [700, 1200, 2600], amp * 1.8, 0.35, kind === 'die' ? 0.5 : 0.85)
     }
   }
 

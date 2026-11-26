@@ -4,6 +4,7 @@ import {
   BackSide,
   Color,
   ConeGeometry,
+  DoubleSide,
   CylinderGeometry,
   DodecahedronGeometry,
   Group,
@@ -779,21 +780,27 @@ export type Deposit = { obj: Group; dir: Vector3; kind: 'ore' | 'crystal'; left:
 
 /** Biyoma göre maden/kristal yatağı sayısı. */
 function depositMix(look: PlanetLook, def: PlanetDef): ['ore' | 'crystal', number][] {
-  if (def.home) return [['ore', 2], ['crystal', 1]]
+  // Büyük gezegende daha çok yatak: en yakını hep yürüme mesafesinde olsun.
+  const k = Math.max(1, Math.min(4, Math.round(def.radius / 110)))
+  return baseMix(look, def).map(([kind, n]) => [kind, n * k])
+}
+
+function baseMix(look: PlanetLook, def: PlanetDef): ['ore' | 'crystal', number][] {
+  if (def.home) return [['ore', 4], ['crystal', 2]]
   switch (look.biome) {
     case 'ice':
     case 'crystal':
     case 'purple':
-      return [['crystal', 3], ['ore', 1]]
+      return [['crystal', 4], ['ore', 2]]
     case 'ocean':
     case 'earth':
     case 'forest':
-      return [['ore', 2], ['crystal', 1]]
+      return [['ore', 3], ['crystal', 2]]
     case 'gas':
     case 'star':
       return []
     default:
-      return [['ore', 4], ['crystal', 1]]
+      return [['ore', 5], ['crystal', 2]]
   }
 }
 
@@ -813,6 +820,13 @@ function depositMesh(kind: 'ore' | 'crystal') {
     c.rotation.set(Math.sin(a) * 0.4, a, Math.cos(a) * 0.4)
     g.add(c)
   }
+  // Işık sütunu: yörüngeden ve uzaktan görünür (yatak tükenince yatakla birlikte kaybolur).
+  const beamMat = new MeshBasicMaterial({ color: new Color(kind === 'ore' ? 0xffb43a : 0x6af0ff).multiplyScalar(1.3), transparent: true, opacity: 0.2, blending: AdditiveBlending, depthWrite: false, side: DoubleSide })
+  beamMat.toneMapped = false
+  const beam = new Mesh(new CylinderGeometry(0.12, 0.5, 32, 8, 1, true), beamMat)
+  beam.position.y = 16
+  beam.name = 'beam'
+  g.add(beam)
   return g
 }
 
@@ -844,7 +858,7 @@ export function scatterDeposits(mesh: Group, def: PlanetDef, look: PlanetLook, s
       const bit = new Vector3().crossVectors(tangent, dir).normalize()
       obj.quaternion.setFromRotationMatrix(new Matrix4().makeBasis(tangent, dir, bit))
       obj.position.copy(dir).multiplyScalar(def.radius - 0.2)
-      obj.scale.setScalar(1.3)
+      obj.scale.setScalar(1.7)
       holder.add(obj)
       out.push({ obj, dir, kind, left, key })
     }

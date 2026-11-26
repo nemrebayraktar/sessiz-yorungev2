@@ -7,6 +7,7 @@ import {
   Color,
   ConeGeometry,
   CylinderGeometry,
+  DodecahedronGeometry,
   DoubleSide,
   Group,
   IcosahedronGeometry,
@@ -377,7 +378,123 @@ function metal(color: number, emissive: number, intensity = 0.35) {
 
 /** Kokpit içi (birinci şahıs): konsol, ekranlar, ışıklı düğmeler, pilotun kolları ve iki kumanda kolu.
  *  Kamera gemi yerelinde (0, 0.36, -0.22) noktasında; ileri -z. Hepsi MeshBasic: ışıktan bağımsız okunur. */
-function buildCockpit(neonHex: number) {
+/** Irka özel pilot kolu: kol rengi/kalınlığı, el biçimi ve ekler (pençe, diken, yaprak, kristal...). */
+type ArmStyle = { suit: number; glove: number; r: number; hand: 'glove' | 'claw' | 'rock' | 'crystal' | 'fin' | 'vine' | 'gold' | 'slim'; extra?: number }
+const ARM_STYLE: Record<string, ArmStyle> = {
+  earth: { suit: 0xd8dde6, glove: 0x8a929e, r: 1, hand: 'glove' },
+  mars: { suit: 0x8a3a24, glove: 0x4a2a20, r: 1.15, hand: 'glove', extra: 0xff8a4a },
+  proxima: { suit: 0x1a1016, glove: 0x0a0608, r: 0.8, hand: 'claw', extra: 0xff2a6a },
+  alpha: { suit: 0x6a4a9a, glove: 0x9a7ac8, r: 0.7, hand: 'slim' },
+  trappist: { suit: 0x2a8a80, glove: 0x8af0e0, r: 0.9, hand: 'crystal' },
+  k218: { suit: 0x1a5a8a, glove: 0x3a8ac0, r: 1, hand: 'fin' },
+  kepler186: { suit: 0x5a2a1a, glove: 0x8a3a2a, r: 0.9, hand: 'vine', extra: 0x7aff7a },
+  gliese: { suit: 0x2a1a14, glove: 0x3a2418, r: 1.5, hand: 'rock', extra: 0xff5a1a },
+  kepler452: { suit: 0xc8a050, glove: 0xf0d890, r: 0.95, hand: 'gold', extra: 0xffe08a },
+}
+
+function buildArm(kind: string, side: number, neon: Color) {
+  const st = ARM_STYLE[kind] ?? ARM_STYLE.earth
+  const arm = new Group()
+  const suit = new MeshBasicMaterial({ color: st.suit })
+  const glove = new MeshBasicMaterial({ color: st.glove })
+  const glow = new MeshBasicMaterial({ color: new Color(st.extra ?? neon.getHex()).multiplyScalar(1.6) })
+  glow.toneMapped = false
+  const r = 0.026 * st.r
+  const fore = new Mesh(new CylinderGeometry(r, r * 1.25, 0.32, st.hand === 'rock' ? 6 : 10), suit)
+  fore.position.set(0, 0, 0.18)
+  fore.rotation.x = Math.PI / 2
+  arm.add(fore)
+  const cuff = new Mesh(new CylinderGeometry(r * 1.08, r * 1.08, 0.016, 10), glow)
+  cuff.position.set(0, 0, 0.035)
+  cuff.rotation.x = Math.PI / 2
+  arm.add(cuff)
+  switch (st.hand) {
+    case 'claw': {
+      const palm = new Mesh(new SphereGeometry(0.024, 10, 8), glove)
+      arm.add(palm)
+      for (let i = 0; i < 3; i++) {
+        const c = new Mesh(new ConeGeometry(0.006, 0.05, 5), glow)
+        c.position.set((i - 1) * 0.013, 0.012, -0.03)
+        c.rotation.x = -Math.PI / 2 - 0.3
+        arm.add(c)
+      }
+      break
+    }
+    case 'rock': {
+      const fist = new Mesh(new IcosahedronGeometry(0.045, 0), glove)
+      arm.add(fist)
+      for (let i = 0; i < 3; i++) {
+        const crack = new Mesh(new BoxGeometry(0.004, 0.004, 0.2), glow)
+        crack.position.set((i - 1) * 0.015, r * 0.9, 0.16)
+        arm.add(crack)
+      }
+      break
+    }
+    case 'crystal': {
+      const hand = new Mesh(new OctahedronGeometry(0.032, 0), glove)
+      hand.scale.set(1, 1.4, 1)
+      arm.add(hand)
+      const spike = new Mesh(new OctahedronGeometry(0.014, 0), glow)
+      spike.position.set(side * 0.025, 0.03, 0.08)
+      arm.add(spike)
+      break
+    }
+    case 'fin': {
+      const hand = new Mesh(new SphereGeometry(0.03, 12, 8), glove)
+      hand.scale.set(1.1, 0.8, 1.2)
+      const fin = new Mesh(new ConeGeometry(0.02, 0.09, 4), glow)
+      fin.position.set(side * 0.03, 0.01, 0.12)
+      fin.rotation.z = side * -1.2
+      arm.add(hand, fin)
+      break
+    }
+    case 'vine': {
+      const hand = new Mesh(new SphereGeometry(0.028, 10, 8), glove)
+      arm.add(hand)
+      for (let i = 0; i < 3; i++) {
+        const leaf = new Mesh(new ConeGeometry(0.012, 0.04, 4), glow)
+        leaf.position.set(side * 0.022, 0.01, 0.08 + i * 0.07)
+        leaf.rotation.z = side * -1.3
+        arm.add(leaf)
+      }
+      break
+    }
+    case 'gold': {
+      const hand = new Mesh(new SphereGeometry(0.03, 12, 8), glove)
+      hand.scale.set(1, 0.9, 1.2)
+      const ring = new Mesh(new TorusGeometry(r * 1.3, 0.005, 6, 18), glow)
+      ring.position.z = 0.09
+      const gem = new Mesh(new OctahedronGeometry(0.008), glow)
+      gem.position.set(0, 0.026, -0.005)
+      arm.add(hand, ring, gem)
+      break
+    }
+    case 'slim': {
+      const hand = new Mesh(new SphereGeometry(0.022, 10, 8), glove)
+      arm.add(hand)
+      for (let i = 0; i < 3; i++) {
+        const f = new Mesh(new CylinderGeometry(0.0035, 0.004, 0.05, 5), glove)
+        f.position.set((i - 1) * 0.01, 0, -0.035)
+        f.rotation.x = Math.PI / 2 + 0.25
+        arm.add(f)
+      }
+      break
+    }
+    default: {
+      const hand = new Mesh(new SphereGeometry(0.03, 12, 8), glove)
+      hand.scale.set(1, 0.9, 1.2)
+      arm.add(hand)
+      if (st.extra) {
+        const plate = new Mesh(new BoxGeometry(0.05, 0.012, 0.1), glow)
+        plate.position.set(0, r * 1.1, 0.14)
+        arm.add(plate)
+      }
+    }
+  }
+  return arm
+}
+
+function buildCockpit(neonHex: number, kind = 'earth') {
   const g = new Group()
   g.name = 'cockpit'
   g.visible = false
@@ -468,10 +585,37 @@ function buildCockpit(neonHex: number) {
   arch.position.set(0, 1.07, -0.85)
   g.add(arch)
   // Pilotun kolları ve kumanda kolları.
-  const suit = new MeshBasicMaterial({ color: 0x3a4252 })
-  const glove = new MeshBasicMaterial({ color: 0x14161c })
-  const band = new MeshBasicMaterial({ color: neon.clone().multiplyScalar(1.6) })
-  band.toneMapped = false
+  // Yan ve üst modüller: sol/sağ duvarda ekranlı paneller, tepede anahtar sırası (önü açık kalır).
+  const panel = (x: number, y: number, z: number, ry: number, rz: number, w: number, h: number, hex: number) => {
+    const p = new Mesh(new BoxGeometry(w, h, 0.02), metal)
+    p.position.set(x, y, z)
+    p.rotation.set(0, ry, rz)
+    g.add(p)
+    const scr = new MeshBasicMaterial({ color: new Color(hex).multiplyScalar(0.9), transparent: true, opacity: 0.85 })
+    scr.toneMapped = false
+    const sc = new Mesh(new BoxGeometry(w * 0.7, h * 0.45, 0.004), scr)
+    sc.position.set(x + Math.sin(ry) * 0.012, y + h * 0.12, z + Math.cos(ry) * 0.012)
+    sc.rotation.set(0, ry, rz)
+    g.add(sc)
+    for (let i = 0; i < 4; i++) {
+      const l = new Mesh(new BoxGeometry(0.012, 0.012, 0.006), i % 2 ? trimMat : scr)
+      l.position.set(x + Math.sin(ry) * 0.012 + Math.cos(ry) * (i - 1.5) * w * 0.18, y - h * 0.3, z + Math.cos(ry) * 0.012 - Math.sin(ry) * (i - 1.5) * w * 0.18)
+      l.rotation.set(0, ry, rz)
+      g.add(l)
+    }
+  }
+  panel(-0.62, 0.22, -0.45, 1.05, 0, 0.3, 0.2, 0x5affa0)
+  panel(0.62, 0.22, -0.45, -1.05, 0, 0.3, 0.2, 0xffb060)
+  panel(-0.66, 0.5, -0.4, 1.2, 0.2, 0.22, 0.14, neonHex)
+  panel(0.66, 0.5, -0.4, -1.2, -0.2, 0.22, 0.14, 0x8ac8ff)
+  const top = new Mesh(new BoxGeometry(0.7, 0.03, 0.22), metal)
+  top.position.set(0, 0.98, -0.42)
+  g.add(top)
+  for (let i = 0; i < 7; i++) {
+    const sw = new Mesh(new BoxGeometry(0.018, 0.025, 0.018), i % 3 === 0 ? trimMat : dark)
+    sw.position.set((i - 3) * 0.07, 0.955, -0.42)
+    g.add(sw)
+  }
   const sticks: Group[] = []
   const arms: Group[] = []
   for (const side of [-1, 1]) {
@@ -486,16 +630,7 @@ function buildCockpit(neonHex: number) {
     stick.add(rod, grip, trig)
     g.add(stick)
     sticks.push(stick)
-    const arm = new Group()
-    const fore = new Mesh(new CylinderGeometry(0.024, 0.032, 0.32, 10), suit)
-    fore.position.set(0, 0, 0.18)
-    fore.rotation.x = Math.PI / 2
-    const cuff = new Mesh(new CylinderGeometry(0.027, 0.027, 0.018, 10), band)
-    cuff.position.set(0, 0, 0.02)
-    cuff.rotation.x = Math.PI / 2
-    const hand = new Mesh(new SphereGeometry(0.03, 12, 8), glove)
-    hand.scale.set(1, 0.9, 1.2)
-    arm.add(fore, cuff, hand)
+    const arm = buildArm(kind, side, neon)
     arm.position.set(side * 0.17, 0.25, -0.56)
     arm.rotation.set(0.95, side * 0.45, 0)
     g.add(arm)
@@ -507,7 +642,7 @@ function buildCockpit(neonHex: number) {
   return g
 }
 
-function wrapShip(body: Group, plumeHex: number): PlayerVisual {
+function wrapShip(body: Group, plumeHex: number, kind = 'earth'): PlayerVisual {
   const root = new Group()
   root.add(body)
   const plumeGeo = new ConeGeometry(0.2, 1.5, 10, 1, true)
@@ -565,7 +700,7 @@ function wrapShip(body: Group, plumeHex: number): PlayerVisual {
   muzzle.position.set(0, 0, -2.35)
   muzzle.visible = false
   root.add(muzzle)
-  const cockpit = buildCockpit(plumeHex)
+  const cockpit = buildCockpit(plumeHex, kind)
   root.add(cockpit)
   return { root, body, cockpit, plumes, plumeMats, shield, shieldMat, engineLight, muzzle }
 }
@@ -678,7 +813,7 @@ export function buildShip(kind: string): PlayerVisual {
   // Yeni neon gemiler (ships.ts). Eski gövdeler aşağıda yedek olarak duruyor.
   const style = SHIP_STYLE[kind] ?? SHIP_STYLE.earth
   if (SHIP_STYLE[kind]) {
-    const v = wrapShip(buildNeonBody(kind), style.plume)
+    const v = wrapShip(buildNeonBody(kind), style.plume, kind)
     const [ex, ey, ez] = style.engine
     v.plumes.forEach((p, i) => p.position.set(i === 0 ? -ex : ex, ey, ez))
     v.engineLight.position.set(0, ey, ez + 0.3)
@@ -1068,4 +1203,115 @@ export function paintBar(ctx: CanvasRenderingContext2D | null, tex: { needsUpdat
     ctx.fillRect(0, 16, Math.max(0, Math.min(1, shield)) * 128, 8)
   }
   tex.needsUpdate = true
+}
+
+/** Yerli kampı yapıları: türün biçimine göre ayrıntılı ev (kubbe, kule, kabuk, ağaç ev, kaya kulübesi...).
+ *  Taban yerin içine uzanır (yüzeyden ayrı durmaz); ışıklı pencere/kapı uzaktan seçilir. */
+export function buildDwelling(form: string, color: number, seed = 0) {
+  const g = new Group()
+  const base = new Color(color)
+  const wallM = new MeshStandardMaterial({ color: base, roughness: 0.75, metalness: 0.05, flatShading: true })
+  const darkM = new MeshStandardMaterial({ color: base.clone().multiplyScalar(0.45), roughness: 0.85, flatShading: true })
+  const lightM = new MeshBasicMaterial({ color: new Color(0xffc870).multiplyScalar(1.5) })
+  lightM.toneMapped = false
+  const add = (m: Mesh, x: number, y: number, z: number) => {
+    m.position.set(x, y, z)
+    g.add(m)
+    return m
+  }
+  // Toprağa gömülü temel: eğimli yüzeyde bile havada kalmaz.
+  add(new Mesh(new CylinderGeometry(1.25, 1.45, 1.2, 10), darkM), 0, -0.45, 0)
+  const door = (y: number, z: number, w = 0.34, h = 0.5) => add(new Mesh(new BoxGeometry(w, h, 0.06), lightM), 0, y, z)
+  switch (form) {
+    case 'astronaut': {
+      add(new Mesh(new SphereGeometry(1.1, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2), wallM), 0, 0.1, 0)
+      add(new Mesh(new TorusGeometry(1.1, 0.06, 6, 24), lightM), 0, 0.3, 0).rotation.x = Math.PI / 2
+      door(0.35, 1.02)
+      const ant = add(new Mesh(new CylinderGeometry(0.03, 0.03, 1.2, 5), darkM), 0.4, 1.4, 0)
+      ant.rotation.z = 0.2
+      add(new Mesh(new SphereGeometry(0.08, 8, 6), lightM), 0.52, 2.0, 0)
+      add(new Mesh(new BoxGeometry(0.9, 0.04, 0.5), new MeshStandardMaterial({ color: 0x2a4a8a, metalness: 0.6, roughness: 0.3 })), -0.9, 1.0, 0).rotation.z = 0.5
+      break
+    }
+    case 'colonist': {
+      add(new Mesh(new CylinderGeometry(0.9, 1.0, 1.6, 8), wallM), 0, 0.75, 0)
+      add(new Mesh(new CylinderGeometry(0.6, 0.75, 1.0, 8), wallM), 0.2, 2.0, 0.1)
+      add(new Mesh(new CylinderGeometry(0.75, 0.75, 0.12, 8), darkM), 0.2, 2.55, 0.1)
+      door(0.4, 0.98)
+      for (let i = 0; i < 3; i++) add(new Mesh(new BoxGeometry(0.18, 0.18, 0.05), lightM), Math.cos(i * 2.1) * 0.74, 2.0, Math.sin(i * 2.1) * 0.74 + 0.1)
+      break
+    }
+    case 'shade': {
+      const sp = add(new Mesh(new ConeGeometry(1.0, 3.2, 5), darkM), 0, 1.4, 0)
+      sp.rotation.y = seed
+      add(new Mesh(new ConeGeometry(0.5, 1.8, 5), darkM), 0.9, 0.7, 0.3)
+      const eye = add(new Mesh(new SphereGeometry(0.16, 10, 8), new MeshBasicMaterial({ color: new Color(0xff2a5a).multiplyScalar(2) })), 0, 1.6, 0.55)
+      ;(eye.material as MeshBasicMaterial).toneMapped = false
+      break
+    }
+    case 'bighead': {
+      add(new Mesh(new CylinderGeometry(0.35, 0.5, 1.4, 10), wallM), 0, 0.6, 0)
+      add(new Mesh(new SphereGeometry(1.3, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2), new MeshStandardMaterial({ color: base.clone().lerp(new Color(0xffffff), 0.3), roughness: 0.5 })), 0, 1.25, 0).scale.set(1, 0.6, 1)
+      for (let i = 0; i < 5; i++) add(new Mesh(new SphereGeometry(0.1, 8, 6), lightM), Math.cos(i * 1.26) * 1.0, 1.35, Math.sin(i * 1.26) * 1.0)
+      door(0.35, 0.4, 0.22, 0.45)
+      break
+    }
+    case 'crystal': {
+      const cm = new MeshStandardMaterial({ color: base.clone().lerp(new Color(0x9affef), 0.4), emissive: base, emissiveIntensity: 0.35, roughness: 0.15, flatShading: true, transparent: true, opacity: 0.92 })
+      for (let i = 0; i < 5; i++) {
+        const h = 1.6 + ((seed + i * 3) % 4) * 0.5
+        const c = add(new Mesh(new OctahedronGeometry(1, 0), cm), Math.cos(i * 1.3) * 0.6, h * 0.55, Math.sin(i * 1.3) * 0.6)
+        c.scale.set(0.35, h, 0.35)
+        c.rotation.z = (i - 2) * 0.12
+      }
+      add(new Mesh(new SphereGeometry(0.2, 8, 6), lightM), 0, 0.5, 0.7)
+      break
+    }
+    case 'belly': {
+      for (let i = 0; i < 4; i++) add(new Mesh(new TorusGeometry(0.9 - i * 0.18, 0.28 - i * 0.04, 8, 16), wallM), 0, 0.3 + i * 0.42, 0).rotation.x = Math.PI / 2
+      add(new Mesh(new ConeGeometry(0.25, 0.6, 8), wallM), 0, 2.1, 0)
+      door(0.3, 0.95, 0.3, 0.4)
+      break
+    }
+    case 'sprout': {
+      add(new Mesh(new CylinderGeometry(0.35, 0.55, 2.6, 7), new MeshStandardMaterial({ color: 0x4a2a1a, roughness: 0.9, flatShading: true })), 0, 1.2, 0)
+      add(new Mesh(new SphereGeometry(1.15, 12, 8), wallM), 0, 2.8, 0).scale.set(1, 0.75, 1)
+      add(new Mesh(new BoxGeometry(0.3, 0.3, 0.05), lightM), 0, 2.7, 1.08)
+      for (let i = 0; i < 3; i++) add(new Mesh(new IcosahedronGeometry(0.5, 0), new MeshStandardMaterial({ color: 0x3a8a2a, flatShading: true })), Math.cos(i * 2.1) * 1.0, 3.3, Math.sin(i * 2.1) * 1.0)
+      break
+    }
+    case 'golem': {
+      const rock = new MeshStandardMaterial({ color: 0x2a1c16, roughness: 0.95, flatShading: true })
+      add(new Mesh(new DodecahedronGeometry(1.3, 0), rock), 0, 0.6, 0).scale.set(1, 0.8, 1)
+      add(new Mesh(new DodecahedronGeometry(0.7, 0), rock), 0.8, 1.5, -0.2)
+      const lava = new MeshBasicMaterial({ color: new Color(0xff5a1a).multiplyScalar(1.8) })
+      lava.toneMapped = false
+      add(new Mesh(new BoxGeometry(0.4, 0.6, 0.06), lava), 0, 0.5, 1.15)
+      add(new Mesh(new CylinderGeometry(0.15, 0.2, 0.7, 6), rock), -0.5, 1.6, 0)
+      break
+    }
+    case 'regal': {
+      const gold = new MeshStandardMaterial({ color: 0xd8b060, metalness: 0.6, roughness: 0.3 })
+      for (let i = 0; i < 3; i++) add(new Mesh(new BoxGeometry(2 - i * 0.55, 0.5, 2 - i * 0.55), gold), 0, 0.25 + i * 0.5, 0)
+      add(new Mesh(new ConeGeometry(0.45, 0.9, 4), gold), 0, 2.0, 0).rotation.y = Math.PI / 4
+      add(new Mesh(new OctahedronGeometry(0.18), lightM), 0, 2.6, 0)
+      door(0.35, 1.0)
+      break
+    }
+    case 'yeti': {
+      add(new Mesh(new SphereGeometry(1.2, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2), new MeshStandardMaterial({ color: 0xe8f4ff, roughness: 0.6, flatShading: true })), 0, 0, 0)
+      add(new Mesh(new CylinderGeometry(0.4, 0.4, 0.8, 10, 1, false, 0, Math.PI), new MeshStandardMaterial({ color: 0xe8f4ff })), 0, 0.3, 1.0).rotation.x = Math.PI / 2
+      door(0.3, 1.25, 0.3, 0.4)
+      break
+    }
+    default: {
+      // Yabani yerli: yuvarlak kulübe, sazdan çatı, kapı ışığı ve küçük baca.
+      add(new Mesh(new CylinderGeometry(1.0, 1.1, 1.1, 10), wallM), 0, 0.5, 0)
+      add(new Mesh(new ConeGeometry(1.35, 1.2, 10), new MeshStandardMaterial({ color: base.clone().lerp(new Color(0xc89a5a), 0.6), roughness: 0.9, flatShading: true })), 0, 1.6, 0)
+      door(0.4, 1.06)
+      add(new Mesh(new CylinderGeometry(0.12, 0.14, 0.6, 6), darkM), 0.5, 2.0, 0.2)
+      for (let i = 0; i < 4; i++) add(new Mesh(new CylinderGeometry(0.05, 0.05, 1.0, 5), darkM), Math.cos(i * 1.57 + 0.4) * 1.6, 0.4, Math.sin(i * 1.57 + 0.4) * 1.6)
+    }
+  }
+  return g
 }

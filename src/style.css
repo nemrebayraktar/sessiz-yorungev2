@@ -854,3 +854,12 @@ body.base-on #quest { top: 238px; }
 body.photo #ship-mark, body.photo #celebrate { display: none !important; }
 /* Kokpitte nişangah büyük ve parlak. */
 body.cockpit #crosshair { transform: translate(-50%, -50%) scale(1.7); filter: drop-shadow(0 0 4px rgba(140, 220, 255, 0.9)); }
+#dep-mark { position: absolute; z-index: 2; pointer-events: none; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; opacity: 0.85; }
+#dep-mark i { font-style: normal; font-size: 15px; color: #ffcf7a; text-shadow: 0 0 8px rgba(255, 180, 60, 0.9); display: block; }
+#dep-mark span { font-size: 10px; color: #ffe2b0; background: rgba(8, 10, 14, 0.55); padding: 0 5px; border-radius: 999px; }
+#dep-mark.edge i { font-size: 0; width: 0; height: 0; border-left: 7px solid transparent; border-right: 7px solid transparent; border-bottom: 12px solid #ffcf7a; text-shadow: none; }
+body.photo #dep-mark { display: none !important; }
+/* Hasar sayıları daha büyük ve okunur. */
+#floats span { font-size: 20px; font-weight: 800; -webkit-text-stroke: 1px rgba(0, 0, 0, 0.5); }
+#floats span.hit { font-size: 22px; }
+#floats span.hurt { font-size: 24px; color: #ff5a4a; }

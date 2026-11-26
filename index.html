@@ -92,6 +92,7 @@
           <small id="q-hint"></small>
         </button>
         <div id="quest-mark" class="hidden" aria-hidden="true"><i>◆</i><span id="quest-dist"></span></div>
+        <div id="dep-mark" class="hidden" aria-hidden="true"><i>⛏</i><span id="dep-dist"></span></div>
         <div id="ship-mark" class="hidden" aria-hidden="true"><i>▲</i><b>Gemin</b><span id="ship-dist"></span></div>
         <div id="celebrate" aria-live="polite"><strong id="cel-title"></strong><span id="cel-sub"></span></div>
         <div id="lore-card" class="hidden" aria-live="polite"><p id="lore-name" class="eyebrow"></p><p id="lore-text"></p></div>
@@ -102,7 +103,7 @@
         </div>
         <div id="heat" class="hidden"><span>Isı</span><i id="heat-fill"></i></div>
         <p id="unlock"></p>
-        <p id="upgrade-hint" class="hidden">⚙ Geliştirmeye yetecek enerji var — bir gezegene in, gemine dokun</p>
+        <p id="upgrade-hint" class="hidden">⚙ Yeni parça için kaynak var — bir gezegene in, gemine yürü ve U'ya bas</p>
         <div id="beacons"></div>
         <p id="heading">Yön 0°</p>
         <p id="route-hint"></p>
@@ -159,6 +160,7 @@
           <button type="button" data-act="look" class="ship-only look">Bak</button>
           <button type="button" data-act="silent" class="ship-only">Sessiz</button>
           <button type="button" data-act="scan" class="ship-only">Tara</button>
+          <button type="button" data-act="dodge" class="ship-only">Kaç</button>
           <button type="button" data-act="skill" class="foot-only">Yetenek</button>
           <button type="button" data-act="order" class="foot-only order-only">Emir</button>
           <button type="button" data-act="jump" class="foot-only">Zıpla</button>
@@ -228,7 +230,7 @@
             <li><kbd>Yumruk</kbd><kbd>Zıpla</kbd><span>Yüzeyde dövüş ve zıpla.</span></li>
             <li><kbd>Üs</kbd><kbd>Taret</kbd><span>Üs kur / yükselt, taret dik.</span></li>
             <li><kbd>Ekip</kbd><span>Üssün yanında baskın ekibi topla.</span></li>
-            <li><kbd>Geliştir</kbd><span>Enerji yetince gemine dokun: gemiyi geliştir.</span></li>
+            <li><kbd>Geliştir</kbd><span>Gemine yürü ve bu düğmeye bas: gemiye parça tak.</span></li>
             <li><kbd>Görev</kbd><span>Sol üstteki görev kartı ne yapacağını, ekrandaki ◆ işareti nereye gideceğini gösterir.</span></li>
           </ul>
           <ul class="keys desk-only">
@@ -236,10 +238,13 @@
             <li><kbd>A</kbd><kbd>D</kbd><span>Sola / sağa kay</span></li>
             <li><kbd>Boşluk</kbd><kbd>Ctrl</kbd><span>Yukarı / aşağı</span></li>
             <li><kbd>Fare</kbd><span>Yunuslama ve sapma. Tuvale tıklayınca işaretçi kilitlenir; kilit yoksa basılı tut.</span></li>
-            <li><kbd>Q</kbd><kbd>E</kbd><span>Yuvarlanma</span></li>
+            <li><kbd>Q</kbd><kbd>E</kbd><span>Basılı tut: sürekli yuvarlan, takla atarak uç</span></li>
             <li><kbd>Shift</kbd><span>Hızlandırma — çok gürültülü</span></li>
             <li><kbd>Sol tık</kbd><span>Ateş — gürültülü</span></li>
             <li><kbd>R</kbd><span>Dengele, ufka yat</span></li>
+            <li><kbd>Tab</kbd><span>Savaşta hedef seç (nişan ve eşlik gemileri ona odaklanır)</span></li>
+            <li><kbd>B</kbd><span>Uzayda kaçınma taklası: yana kayar, mermiler sıyırır</span></li>
+            <li><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><span>Uzayda eşlik gemileri: takip / saldır / koru</span></li>
             <li><kbd>C</kbd><span>Kamera: kovalamaca / kokpit</span></li>
             <li><kbd>F</kbd><span>Filoyla kapış, ya da yeterince uzaktaysan kaç</span></li>
             <li><kbd>Esc</kbd><span>Duraklat</span></li>
@@ -253,7 +258,7 @@
             <li><kbd>T</kbd><span>Üssün yanında taret kur. Taretler uzaylı dalgalarını kendi vurur.</span></li>
             <li><kbd>J</kbd><span>Görev günlüğü: hikâye ve görevler</span></li>
             <li><kbd>Sağ tık</kbd><kbd>Z</kbd><span>Basılı tutup fareyi oynat: kamerayı karakterin / durmuş geminin çevresinde döndür, yüzünü gör</span></li>
-            <li><kbd>E</kbd><span>Yüzeyde geminin yanında: gemiyi geliştir (sol tık da olur)</span></li>
+            <li><kbd>U</kbd><span>Yüzeyde geminin yanında: gemiye parça tak (E de olur)</span></li>
             <li><kbd>K</kbd><span>Kendi üssünün yanında: baskın ekibi topla / geri bırak</span></li>
             <li><kbd>N</kbd><span>Sağ alttaki radar ile sistem haritası arasında geç (radara tıklamak da olur)</span></li>
             <li><kbd>M</kbd><span>Sesi kapat / aç</span></li>
@@ -366,6 +371,7 @@
           <div class="settings">
             <label class="check"><input id="set-easy" type="checkbox" /> Kolay mod (gemi takla atmaz)</label>
             <label class="check"><input id="set-guide" type="checkbox" /> Görev rehberi ve hedef oku</label>
+            <label class="check"><input id="set-music" type="checkbox" /> Müzik (her sistemin kendi teması, savaşta hızlanır)</label>
             <label class="slider">Ses <input id="set-vol" type="range" min="0" max="1" step="0.01" /></label>
             <label class="slider">Bakış hassasiyeti <input id="set-sens" type="range" min="0.4" max="2.2" step="0.01" /></label>
             <div class="seg-row"><span>Joystick tarafı</span>

@@ -272,7 +272,7 @@ export const QUESTS: QuestText[] = [
     chapter: 'Bölüm 3 · Yuva',
     title: 'Gemine parça tak',
     story: 'Gemi düz güçlenmez: her kademede iki parçadan birini seçersin. En güzel ve en güçlü parçalar türüne özel efsane parçalar.',
-    hint: 'Gemine yürü, sol tık / E: bir yuva seç ve iki parçadan birini tak.',
+    hint: 'Gemine yürü ve U tuşuna bas: bir yuva seç (1–5) ve iki parçadan birini tak.',
     touch: 'Gemine yürü, Geliştir: bir yuva seç ve iki parçadan birini tak.',
   },
   {

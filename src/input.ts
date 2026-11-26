@@ -18,6 +18,7 @@ const BLOCK = new Set([
   'KeyT',
   'KeyV',
   'KeyZ',
+  'Tab',
   'Digit7',
   'Digit6',
   'Digit5',
@@ -66,6 +67,7 @@ export class Input {
   touchScan = false
   touchSkill = false
   touchOrder = false
+  touchDodge = false
   locked = false
   private readonly el: HTMLElement
 
@@ -263,6 +265,7 @@ export class Input {
       scan: 'touchScan',
       skill: 'touchSkill',
       order: 'touchOrder',
+      dodge: 'touchDodge',
     }
     root.querySelectorAll<HTMLButtonElement>('button[data-act]').forEach((btn) => {
       const key = map[btn.dataset.act || '']
