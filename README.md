@@ -51,7 +51,8 @@ Geliştirmeler: gövde, kalkan, silah, motor, gizlilik. Motor itişi artırır, 
 | `G` | Gemide: özel yetenek · Yayayken: ırk yeteneği (Hava desteği, Deprem, Gölge adımı…) |
 | `H` | Mini kara delik (Kepler-452b) |
 | `X` | Açık silahlar arasında geç |
-| `L` | Gezegene in / yüzeyde gemiye bin |
+| `L` | Gezegene in (geminin altına; üssüne ~150 birimden yakınsan üssün yanına) / yüzeyde gemiye bin |
+| `Shift+L` | Doğrudan kendi üssünün yanına in (Harita → "⌂ Üsse in" de aynı) |
 | `B` | Yüzeyde üs ya da karakol kur; üssün yanında onar / yükselt |
 | `T` | Yüzeyde: üssün yanında taret kur · Gemide: tarama (filoları ve kaynak yataklarını gösterir, görünürlüğü artırır) |
 | `V` | Sessiz süzülme: motor kapalı, yavaş ama neredeyse görünmez |

@@ -748,9 +748,11 @@ export function buildLandmark(owner: OriginId | string, level: number, tint: num
   // Meydan: anıtın oturduğu ırk renginde taş zemin ve ışıklı çember.
   const plaza = new Mesh(new CylinderGeometry(10.5, 11, 0.5, 40), new MeshStandardMaterial({ color: shade(tint, 0.35), roughness: 0.7, metalness: 0.2 }))
   plaza.position.y = -0.55
+  plaza.name = 'plaza'
   const rim = new Mesh(new TorusGeometry(10.6, 0.12, 6, 64), glow)
   rim.rotation.x = Math.PI / 2
   rim.position.y = -0.28
+  rim.name = 'plaza-rim'
   g.add(plaza, rim)
   // Seviyeyle çoğalan yan yapılar: küçük kuleler, ışıklı direkler.
   const sat = Math.max(0, level - 1)
@@ -763,6 +765,7 @@ export function buildLandmark(owner: OriginId | string, level: number, tint: num
     lamp.position.y = 4.6 + i
     tower.add(body, lamp)
     tower.position.set(Math.cos(a) * 8, 0, Math.sin(a) * 8)
+    tower.name = 'sat'
     g.add(tower)
   }
   return g
@@ -797,6 +800,8 @@ function baseMix(look: PlanetLook, def: PlanetDef): ['ore' | 'crystal', number][
     case 'forest':
       return [['ore', 3], ['crystal', 2]]
     case 'gas':
+      // Gaz devlerinin yüzen adalarında da yatak var (kristalce zengin).
+      return [['crystal', 3], ['ore', 3]]
     case 'star':
       return []
     default:

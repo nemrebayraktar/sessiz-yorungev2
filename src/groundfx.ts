@@ -55,11 +55,23 @@ export class RigFlash {
     }
   }
 
+  /** Silinmeden önce renk her zaman geri yüklenir: yoksa parlama anında temizlenen gövde (ör. oyuncunun golemi
+   *  iniş/biniş sırasında) kalıcı olarak kırmızı/turuncu parlar kalıyordu. */
+  private restore(item: { saved: Saved[] }) {
+    for (const s of item.saved) {
+      s.mat.emissive.copy(s.color)
+      s.mat.emissiveIntensity = s.intensity
+    }
+  }
+
   forget(root: Object3D) {
+    const item = this.items.get(root)
+    if (item) this.restore(item)
     this.items.delete(root)
   }
 
   clear() {
+    for (const item of this.items.values()) this.restore(item)
     this.items.clear()
   }
 }

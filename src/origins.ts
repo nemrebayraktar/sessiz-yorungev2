@@ -451,14 +451,26 @@ function solarSystem(): PlanetDef[] {
   const sunR = 78 * PLANET_SIZE
   const out = [orb('gunes-yildiz', 'Güneş', 0, 0, 0, sunR, 0xffe08a, { heat: true, gravity: 8, jump: 6, glide: 1, move: 1 })]
   let edge = sunR + 60
-  SOLAR.forEach(([id, name, base, color, y, opt], i) => {
+  let i = 0
+  for (const [id, name, base, color, y, opt] of SOLAR) {
     const radius = base * PLANET_SIZE
     const reach = bodyReach(radius, opt.rings)
+    if (id === 'ay') {
+      // Ay Dünya'nın hemen yanında, aynı yörünge yarıçapında (aynı açısal hızla birlikte döner, hiç ayrılmaz).
+      const earth = out.find((d) => d.id === 'dunya') as PlanetDef
+      const eflat = Math.hypot(earth.x, earth.z)
+      const eAng = Math.atan2(earth.z, earth.x)
+      const d = bodyReach(earth.radius) + reach + ORBIT_GAP * 0.9
+      const a = eAng + 2 * Math.asin(Math.min(0.9, d / (2 * eflat)))
+      out.push(orb(id, name, Math.cos(a) * eflat, earth.y + 20, Math.sin(a) * eflat, radius, color, { landable: true, ...opt }))
+      continue
+    }
     const flat = edge + ORBIT_GAP + reach
     edge = flat + reach
     const ang = 0.35 + i * 2.39996
+    i++
     out.push(orb(id, name, Math.cos(ang) * flat, y, Math.sin(ang) * flat, radius, color, { landable: true, ...opt }))
-  })
+  }
   return out
 }
 

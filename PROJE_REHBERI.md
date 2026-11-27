@@ -235,3 +235,17 @@ Yaya modunda (`layer: 'foot'`) çalışır; mantık `game.ts` içinde "Üs savun
 - **Dokunmatik düzen:** gemide Ateş/Hız/Sessiz/Kaç/İn/⋯, yayayken Yumruk/Zıpla/Yetenek/Üs/İn/⋯; duruma göre Parça (gemi yanında) ve Ekip (çekirdek yanında). "⋯" ikincilleri açar: Tara, Silah, **Kamera** (kokpit), Yukarı/Aşağı, Bak, G/H; yayayken Taret, Emir.
 - **Düşman rolleri:** avcı (küçük, kırmızımsı, çok hızlı, dibine girer, sık ateş, az can), bombacı (büyük, turuncumsu, uzakta durur, güdümlü füze atar), kalkanlı (mavi kalkan küresi, 3,2× kalkan, yavaşça yeniden dolar). Savaş başında rol özeti; kilit işaretinin altında hedefin rolü (KALKANLI / KALKAN KIRILDI…).
 - Test: `scripts/e2e-v17.mjs`.
+
+## Aşama 16 (v14, A turu: düzeltmeler ve his)
+- **Ay–Dünya:** Ay artık Dünya'nın hemen yanında, aynı yörünge yarıçapında (aynı açısal hızla birlikte döner, birbirinden ayrılmaz); Merkür güneşe en yakın halkada, Dünya'dan çok uzakta.
+- **Güneş ısısı** (`applyHeat`): güneşin ~3,5 yarıçap içi şarj kuşağı (enerji kazanırsın; Merkür burada, güvenli); yüzeye ~1 yarıçaptan yakın yanma kuşağı: önce kalkan sonra gövde erir, kalkan dolmaz, ekran kızarır, uyarı sesi ve yazısı. HUD: "Güneş şarjı +N/sn" ya da yanıp sönen "Isı: yanıyorsun!".
+- **Kaynakların anlamı:** taret = enerji + 2 maden; üs yükseltmesi = enerji + maden (sv4+ kristal de); gemi parçaları maden/kristal. "Kaynak topla" ve "Üssünü güçlendir" görevleri bunu anlatır. Tükenen yatak 5 dakikada yeniden dolar.
+- **Yatak denetimi:** gaz devlerinde de yatak var (eskiden hiç yoktu; Gümüş/Kehkeşan gibi gezegenler buydu). `depositAudit` 12 sistemin inilebilir 85 gezegeninin hepsinde ≥2 yatak olduğunu doğrular.
+- **Anıt çarpışması gerçek sınırdan** (`coreFootprint`): anıtın yere yakın her parçası bir engel dairesi olur (Dünya'nın cam kulesine artık girilmez).
+- **İniş:** L geminin altındaki noktaya iner. Kendi üssüne ~150 birimden yakınsan üssün yanına; Shift+L ya da Harita → "⌂ Üsse in" her zaman üssün yanına indirir. Düşman üssünün 45 birim yakınına inilmez.
+- **Eğri meydan:** meydan düz disk değil, gezegenin eğrisine oturan küresel kapak + yere gömülen temel eteği; yan kuleler de yüzeye indirilir (küçük gezegende üs havada/altı boş görünmez).
+- **Diplomasi:** diyalog yalnız ilk karşılaşmada (ve gerginken 10 dakikada bir); savaştaki ırk konuşmadan saldırır. Diplomasi panelinde savaştaki ırka "Ateşkes teklif et" (bedel + güç ve ilişkiye bağlı şans; kabul ederse ilişki gergin olur, filoları çekilir).
+- **Performans:** efekt geometrileri paylaşılır, puf bulutları tek malzeme, efekt üst sınırı (`FX_CAP`), otomatik çözünürlük (kare süresi uzarsa kademeli düşer, rahatlayınca geri çıkar).
+- **Hasar hissi:** gövdesi %50'nin altındaki gemilerden (düşman ve oyuncu) duman ve ateş izi; isabette gemi gövdesi ve kokpit belirgin sarsılır.
+- Test: `scripts/e2e-v18.mjs`.
+- **Oyuncu bildirimi düzeltmeleri:** "Düşman üssünü ele geçir" adımı çekirdeği yıkınca da tamamlanır (eğitim 17. adımda takılıyordu). Vuruş parlaması temizlenirken renkler geri yüklenir (golemin rengi iniş/binişte kalıcı turuncu kalıyordu). Yakındaki (≤150) düşman üssüne inişte 45 birim ötesine inilir.

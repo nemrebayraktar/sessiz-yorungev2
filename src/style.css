@@ -440,6 +440,8 @@ kbd {
   min-width: 140px; padding: 6px 10px; border-radius: 999px;
   background: rgba(90, 20, 8, 0.72); color: #ffd0b0; text-align: center; letter-spacing: 0.14em; text-transform: uppercase; font-size: 12px;
 }
+#heat.burn { color: #ff6a4a; animation: heatblink 0.6s infinite alternate; }
+@keyframes heatblink { to { opacity: 0.55; } }
 #heat i { display: block; height: 4px; margin-top: 4px; background: #ff7a3c; width: 0; border-radius: 99px; }
 #unlock {
   position: absolute; left: 50%; top: 128px; transform: translateX(-50%);

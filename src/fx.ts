@@ -44,6 +44,20 @@ function smoke() {
   return smokeTex
 }
 
+/** Paylaşılan geometriler: her efekt için yeniden üretilmez (savaşta çöp ve GPU yüklemesi azalır). */
+const GEO = new Map<string, BufferGeometry>()
+function shared(key: string, make: () => BufferGeometry) {
+  let g = GEO.get(key)
+  if (!g) {
+    g = make()
+    GEO.set(key, g)
+  }
+  return g
+}
+
+/** Efekt üst sınırı: aşılırsa önemsiz efektler (duman, parça) atlanır, ışık parlamaları kısılır. */
+export const FX_CAP = 140
+
 const tmp = new Vector3()
 const tmp2 = new Vector3()
 
@@ -54,7 +68,10 @@ export class Fx {
     this.scene = scene
   }
 
+  /** Toplam üretilen efekt sayısı (test için). */
+  made = 0
   private push(obj: Group | Mesh | Sprite, life: number, tick: Item['tick'], mats: Material[], geos: BufferGeometry[]) {
+    this.made++
     this.scene.add(obj)
     this.items.push({ obj, t: 0, life, tick, mats, geos })
   }
@@ -87,7 +104,7 @@ export class Fx {
 
   /** Yüzeyde genişleyen ince halka (şok dalgası). */
   ring(at: Vector3, up: Vector3, color: number, radius: number, life = 0.6, width = 0.08) {
-    const geo = new RingGeometry(1 - width, 1, 64)
+    const geo = shared(`ring${width}`, () => new RingGeometry(1 - width, 1, 64))
     const mat = this.glow(color, 0.9, 1.2)
     const m = new Mesh(geo, mat)
     m.position.copy(at).addScaledVector(up, 0.3)
@@ -95,7 +112,7 @@ export class Fx {
     this.push(m, life, (k) => {
       m.scale.setScalar(0.5 + k * radius)
       mat.opacity = 0.9 * (1 - k) * (1 - k)
-    }, [mat], [geo])
+    }, [mat], [])
   }
 
   /** Yerden yükselen ışık sütunu (hava desteği, altın hale). */
@@ -129,14 +146,14 @@ export class Fx {
 
   /** Genişleyen küre dalgası (zihin dalgası). */
   wave(at: Vector3, color: number, radius: number, life = 0.7) {
-    const geo = new SphereGeometry(1, 24, 14)
+    const geo = shared('wave', () => new SphereGeometry(1, 24, 14))
     const mat = this.glow(color, 0.45, 1.3)
     const m = new Mesh(geo, mat)
     m.position.copy(at)
     this.push(m, life, (k) => {
       m.scale.setScalar(0.5 + k * radius)
       mat.opacity = 0.45 * (1 - k)
-    }, [mat], [geo])
+    }, [mat], [])
   }
 
   /** Yerde ışıyan yarıklar (deprem). */
@@ -172,8 +189,10 @@ export class Fx {
 
   /** Fırlayan parçalar: kaya, kristal ya da metal; yerçekimiyle düşer, döner. */
   debris(at: Vector3, up: Vector3, color: number, count: number, speed: number, life = 1.3, kind: 'rock' | 'crystal' | 'metal' = 'rock', glow = false) {
+    if (this.items.length > FX_CAP) return
+    if (this.items.length > FX_CAP * 0.6) count = Math.ceil(count / 2)
     const g = new Group()
-    const geo = kind === 'crystal' ? new OctahedronGeometry(0.3, 0) : kind === 'metal' ? new BoxGeometry(0.35, 0.12, 0.5) : new DodecahedronGeometry(0.35, 0)
+    const geo = shared(`deb-${kind}`, () => (kind === 'crystal' ? new OctahedronGeometry(0.3, 0) : kind === 'metal' ? new BoxGeometry(0.35, 0.12, 0.5) : new DodecahedronGeometry(0.35, 0)))
     const mat = glow ? this.glow(color, 1, 1.4) : new MeshStandardMaterial({ color, roughness: kind === 'metal' ? 0.4 : 0.9, metalness: kind === 'metal' ? 0.6 : 0, flatShading: true, emissive: color, emissiveIntensity: 0.25 })
     const parts: { m: Mesh; v: Vector3; r: Vector3 }[] = []
     const upc = up.clone()
@@ -200,18 +219,21 @@ export class Fx {
         const s = (1 - k) / 0.25
         for (const p of parts) p.m.scale.multiplyScalar(0.9 + s * 0.1)
       }
-    }, [mat], [geo])
+    }, [mat], [])
   }
 
   /** Duman/toz bulutu: büyüyen, yükselen, sönen puflar. */
   puff(at: Vector3, color: number, count: number, size: number, life = 1.2, rise?: Vector3, additive = false) {
+    if (this.items.length > FX_CAP) return
+    if (this.items.length > FX_CAP * 0.6) count = Math.ceil(count / 2)
     const g = new Group()
     const mats: Material[] = []
     const parts: { s: Sprite; v: Vector3; m: SpriteMaterial; base: number }[] = []
+    // Bir bulutun tüm pufları tek malzemeyi paylaşır (aynı anda söner).
+    const m = new SpriteMaterial({ map: smoke(), color, transparent: true, opacity: 0.6, depthWrite: false, blending: additive ? AdditiveBlending : undefined })
+    if (additive) m.toneMapped = false
+    mats.push(m)
     for (let i = 0; i < count; i++) {
-      const m = new SpriteMaterial({ map: smoke(), color, transparent: true, opacity: 0.6, depthWrite: false, blending: additive ? AdditiveBlending : undefined })
-      if (additive) m.toneMapped = false
-      mats.push(m)
       const s = new Sprite(m)
       s.position.copy(at).add(tmp2.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(size * 0.6))
       const base = size * (0.6 + Math.random() * 0.8)
@@ -226,13 +248,14 @@ export class Fx {
         p.s.position.addScaledVector(p.v, dt)
         p.v.multiplyScalar(1 - dt * 1.5)
         p.s.scale.setScalar(p.base * (1 + k * 1.8))
-        p.m.opacity = 0.6 * (1 - k)
       }
+      m.opacity = 0.6 * (1 - k)
     }, mats, [])
   }
 
   /** Kısa, parlak patlama ışığı. */
   flash(at: Vector3, color: number, size: number, life = 0.25) {
+    if (this.items.length > FX_CAP * 1.3) return
     const m = new SpriteMaterial({ map: smoke(), color: new Color(color).multiplyScalar(2), transparent: true, depthWrite: false, blending: AdditiveBlending })
     m.toneMapped = false
     const s = new Sprite(m)
