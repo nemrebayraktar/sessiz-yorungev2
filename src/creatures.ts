@@ -498,50 +498,153 @@ function golem(look: CreatureLook): Parts {
   return p
 }
 
-/* ---------------- Kepler-452: Altın — zarif, süzülen, başında hale ---------------- */
+/* ---------------- Kepler-452: Altın — kadim soylu: uzun boylu, altın zırhlı, taçlı, asalı ve gerçek dalgalanan pelerinli ---------------- */
 function regal(look: CreatureLook): Parts {
   const p = frame()
-  const gold = mat(look.body ?? 0xe0b15a, { metal: 0.65, rough: 0.28, glow: 0.18 })
-  const ivory = mat(look.skin ?? 0xfff0c0, { glow: 0.25, rough: 0.35 })
-  const robe = part(cone(0.42, 1.2, 12), gold, 0, 0.62, 0)
-  const sash = part(tor(0.27, 0.04), ivory, 0, 1.0, 0)
-  sash.rotation.x = Math.PI / 2
-  const chest = part(sph(0.26, 14, 10), gold, 0, 1.24, 0)
-  chest.scale.set(1.1, 0.9, 0.9)
-  const gem = part(oct(0.08), shine(0x8fe8ff, 2), 0, 1.25, 0.24)
-  const capeM = new MeshStandardMaterial({ color: 0xb8323a, roughness: 0.6, side: DoubleSide, emissive: 0x6a1018, emissiveIntensity: 0.25 })
-  const cape = new Mesh(cached('cape', () => new CylinderGeometry(0.3, 0.55, 1.25, 12, 1, true, Math.PI * 0.65, Math.PI * 0.7)), capeM)
-  cape.position.set(0, 0.8, -0.02)
-  p.wiggle.push(cape)
-  p.head.position.set(0, 1.72, 0)
-  const face = part(sph(0.27, 16, 12), ivory)
-  face.scale.set(0.95, 1.1, 0.95)
-  const eyeM = shine(0xffc23a, 2)
-  const eL = part(sph(0.05, 8, 6), eyeM, -0.1, 0.03, 0.23)
-  const eR = part(sph(0.05, 8, 6), eyeM, 0.1, 0.03, 0.23)
-  eL.scale.set(1.6, 0.7, 0.6)
-  eR.scale.set(1.6, 0.7, 0.6)
-  const crest = part(cone(0.1, 0.5, 4), gold, 0, 0.36, -0.05)
-  const halo = part(tor(0.3, 0.03), shine(0xffe7a0, 1.8), 0, 0.52, -0.04)
-  halo.rotation.x = Math.PI / 2 - 0.15
-  p.wiggle.push(halo)
-  p.head.add(face, eL, eR, crest, halo)
+  const gold = mat(look.body ?? 0xe0b15a, { metal: 0.85, rough: 0.22, glow: 0.12 })
+  const goldDark = mat(0x9a7230, { metal: 0.8, rough: 0.35, glow: 0.05 })
+  const ivory = mat(0xf0d8b0, { glow: 0.16, rough: 0.4 })
+  const gemM = shine(0x8fe8ff, 2)
+  const line = shine(0xffe7a0, 1.6)
+  // Bacaklar: dizlik ve altın çizme (eteğin altından görünür).
+  p.legL.position.set(-0.12, 0.62, 0)
+  p.legR.position.set(0.12, 0.62, 0)
+  for (const leg of [p.legL, p.legR]) {
+    leg.add(part(cap(0.075, 0.26), ivory, 0, -0.18, 0))
+    leg.add(part(cyl(0.085, 0.075, 0.2, 10), gold, 0, -0.42, 0.01))
+    const boot = part(box(0.13, 0.08, 0.24), gold, 0, -0.56, 0.05)
+    leg.add(boot)
+  }
+  // Etek: fildişi iç etek + altın dilimli zırh etekleri.
+  const skirt = part(cached('regalSkirt', () => new CylinderGeometry(0.24, 0.4, 0.62, 18, 1, true)), new MeshStandardMaterial({ color: 0xf4ead8, roughness: 0.75, side: DoubleSide }), 0, 0.56, 0)
+  const tassets: Mesh[] = []
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2 + Math.PI / 6
+    const t = part(box(0.2, 0.34, 0.025), gold, Math.sin(a) * 0.29, 0.7, Math.cos(a) * 0.29)
+    t.rotation.y = a
+    t.rotation.x = 0.18
+    tassets.push(t)
+  }
+  const belt = part(tor(0.25, 0.04), gold, 0, 0.88, 0)
+  belt.rotation.x = Math.PI / 2
+  const buckle = part(oct(0.065), gemM, 0, 0.88, 0.26)
+  // Göğüs zırhı: biçimli zırh, kakma ışık çizgileri, boyunluk.
+  const torso = part(cap(0.23, 0.32), gold, 0, 1.16, 0)
+  torso.scale.set(1.18, 1, 0.82)
+  const plate = part(sph(0.2, 16, 12), gold, 0, 1.22, 0.1)
+  plate.scale.set(1.1, 1.05, 0.55)
+  const lines: Mesh[] = []
   for (const side of [-1, 1]) {
-    const fin = part(cone(0.05, 0.32, 4), gold, side * 0.25, 0.12, -0.02)
-    fin.rotation.z = side * -1.1
-    p.head.add(fin)
+    const l = part(box(0.02, 0.26, 0.01), line, side * 0.08, 1.16, 0.205)
+    l.rotation.z = side * 0.45
+    lines.push(l)
   }
-  p.armL.position.set(-0.34, 1.36, 0)
-  p.armR.position.set(0.34, 1.36, 0)
+  const heart = part(oct(0.05), gemM, 0, 1.3, 0.21)
+  const gorget = part(tor(0.15, 0.045), gold, 0, 1.47, 0)
+  gorget.rotation.x = Math.PI / 2
+  const neck = part(cyl(0.065, 0.075, 0.16, 10), ivory, 0, 1.55, 0)
+  // Omuzluklar (gövdeye sabit; kollar altında döner).
+  const pauldrons: Mesh[] = []
+  for (const side of [-1, 1]) {
+    const pd = part(sph(0.14, 14, 10, ), gold, side * 0.33, 1.43, 0)
+    pd.scale.set(1.2, 0.75, 1.05)
+    const rim = part(tor(0.13, 0.02), goldDark, side * 0.33, 1.38, 0)
+    rim.rotation.x = Math.PI / 2
+    const fin = part(cone(0.035, 0.22, 4), gold, side * 0.38, 1.56, -0.02)
+    fin.rotation.z = side * -0.5
+    pauldrons.push(pd, rim, fin)
+  }
+  // Kollar: üst kol, altın bileklik, el; sağ elde asa.
+  p.armL.position.set(-0.36, 1.38, 0)
+  p.armR.position.set(0.36, 1.38, 0)
   for (const arm of [p.armL, p.armR]) {
-    arm.add(part(cyl(0.05, 0.04, 0.58, 6), gold, 0, -0.29, 0))
-    arm.add(part(sph(0.07, 8, 6), ivory, 0, -0.6, 0))
+    arm.add(part(cap(0.058, 0.22), goldDark, 0, -0.17, 0))
+    arm.add(part(cyl(0.07, 0.06, 0.2, 10), gold, 0, -0.38, 0))
+    arm.add(part(sph(0.06, 10, 8), ivory, 0, -0.53, 0.01))
   }
-  p.armR.add(part(sph(0.1, 10, 8), shine(0x9ff0ff, 1.8), 0, -0.72, 0.06))
-  p.legL.position.set(-0.12, 0.2, 0)
-  p.legR.position.set(0.12, 0.2, 0)
-  for (const leg of [p.legL, p.legR]) leg.add(part(cone(0.07, 0.24, 5), gold, 0, -0.14, 0))
-  p.hips.add(robe, sash, chest, gem, cape)
+  const staff = new Group()
+  staff.position.set(0, -0.53, 0.05)
+  staff.add(part(cyl(0.018, 0.018, 1.35, 6), gold, 0, 0.1, 0))
+  const crescent = part(tor(0.09, 0.016), gold, 0, 0.82, 0)
+  const orb = part(sph(0.06, 12, 10), gemM, 0, 0.82, 0)
+  staff.add(crescent, orb, part(cone(0.03, 0.1, 6), gold, 0, -0.6, 0))
+  staff.children[staff.children.length - 1].rotation.x = Math.PI
+  p.armR.add(staff)
+  // Baş: uzun zarif yüz, ince altın gözler, alın tacı, taç sivrileri, arkaya uzanan başlık ve hale.
+  p.head.position.set(0, 1.8, 0)
+  const face = part(sph(0.2, 18, 14), ivory, 0, 0, 0.01)
+  face.scale.set(0.86, 1.18, 0.92)
+  const jaw = part(sph(0.12, 12, 10), ivory, 0, -0.14, 0.04)
+  jaw.scale.set(0.9, 0.75, 0.9)
+  const eyeM = shine(0xffc23a, 2.2)
+  const eL = part(box(0.075, 0.018, 0.02), eyeM, -0.075, 0.02, 0.17)
+  const eR = part(box(0.075, 0.018, 0.02), eyeM, 0.075, 0.02, 0.17)
+  eL.rotation.z = -0.22
+  eR.rotation.z = 0.22
+  const nose = part(box(0.018, 0.07, 0.03), ivory, 0, -0.03, 0.185)
+  const circlet = part(tor(0.17, 0.022), gold, 0, 0.1, 0)
+  circlet.rotation.x = Math.PI / 2 - 0.12
+  const brow = part(oct(0.035), gemM, 0, 0.12, 0.17)
+  const crownParts: Mesh[] = []
+  for (let i = 0; i < 5; i++) {
+    const a = -0.9 + i * 0.45
+    const h = i === 2 ? 0.26 : 0.16 + (i % 2) * 0.03
+    const sp = part(cone(0.025, h, 4), gold, Math.sin(a) * 0.15, 0.17 + h / 2, -Math.cos(a) * 0.05 + 0.02)
+    crownParts.push(sp)
+  }
+  // Altın başlık: başın üstünü örten kask ve arkaya uzanan zarif tepelik.
+  const helm = part(cached('regalHelm', () => new SphereGeometry(0.185, 18, 10, 0, Math.PI * 2, 0, Math.PI * 0.42)), gold, 0, 0.035, -0.005)
+  helm.scale.set(0.95, 1.2, 1)
+  const hood = part(cone(0.09, 0.42, 10), gold, 0, 0.17, -0.2)
+  hood.rotation.x = -1.9
+  const halo = part(tor(0.3, 0.018), shine(0xffe7a0, 1.8), 0, 0.12, -0.26)
+  halo.name = 'halo'
+  const rays: Mesh[] = []
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2
+    const r = part(box(0.012, 0.08, 0.01), line, Math.cos(a) * 0.36, 0.12 + Math.sin(a) * 0.36, -0.26)
+    r.rotation.z = a - Math.PI / 2
+    rays.push(r)
+  }
+  p.head.add(face, jaw, eL, eR, nose, helm, circlet, brow, hood, halo, ...crownParts, ...rays)
+  // Pelerin: omuzlardan sarkan, zincirleme bölümlerden oluşan kumaş; yürürken arkaya savrulur ve dalgalanır.
+  const capeM = new MeshStandardMaterial({ color: 0x8a1a28, roughness: 0.7, side: DoubleSide, emissive: 0x3a0810, emissiveIntensity: 0.3 })
+  const capeIn = new MeshStandardMaterial({ color: 0xd8b050, roughness: 0.5, metalness: 0.5, side: DoubleSide })
+  const capeRoot = new Group()
+  capeRoot.position.set(0, 1.45, -0.17)
+  const segs: Group[] = []
+  let parent: Group = capeRoot
+  const SEG = 5
+  for (let i = 0; i < SEG; i++) {
+    const h = 0.26
+    const w0 = 0.3 + i * 0.045
+    const pivot = new Group()
+    if (i > 0) pivot.position.y = -h
+    const geo = cached(`capeSeg${i}`, () => {
+      const g = new CylinderGeometry(w0, w0 + 0.045, h, 12, 1, true, Math.PI * 0.62, Math.PI * 0.76)
+      g.translate(0, -h / 2, 0)
+      return g
+    })
+    const panel = new Mesh(geo, capeM)
+    panel.scale.z = 0.55
+    pivot.add(panel)
+    if (i === SEG - 1) {
+      const hem = new Mesh(cached('capeHem', () => {
+        const g = new CylinderGeometry(w0 + 0.046, w0 + 0.05, 0.04, 12, 1, true, Math.PI * 0.62, Math.PI * 0.76)
+        g.translate(0, -h, 0)
+        return g
+      }), capeIn)
+      hem.scale.z = 0.55
+      pivot.add(hem)
+    }
+    parent.add(pivot)
+    segs.push(pivot)
+    parent = pivot
+  }
+  const clasp = part(sph(0.05, 10, 8), gemM, 0, 1.45, 0.02)
+  p.hips.add(skirt, ...tassets, belt, buckle, torso, plate, ...lines, heart, gorget, neck, ...pauldrons, capeRoot, clasp)
+  p.hips.userData.cape = segs
+  p.wiggle.push(halo)
   return p
 }
 
@@ -791,6 +894,7 @@ export function buildCreature(look: CreatureLook): Rig {
   lift.add(p.hips)
   root.add(lift)
   root.userData.form = look.form
+  if (p.hips.userData.cape) root.userData.cape = p.hips.userData.cape
   return { root, armL: p.armL, armR: p.armR, legL: p.legL, legR: p.legR, head: p.head, style: look.style, hips: lift, wiggle: p.wiggle }
 }
 

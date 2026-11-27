@@ -890,3 +890,50 @@ body.more-open #touch-buttons .more-btn { background: rgba(228, 161, 92, 0.25); 
 body.no-ab1.more-open #touch-buttons button[data-act="ab1"], body.no-ab2.more-open #touch-buttons button[data-act="ab2"] { display: none; }
 #lock-on::after { content: attr(data-role); position: absolute; left: 50%; top: 100%; transform: translate(-50%, 6px); font-size: 10px; letter-spacing: 0.14em; color: #ffd0a0; white-space: nowrap; text-shadow: 0 1px 4px #000; }
 #lock-on.picked { border-color: #ff7a4a !important; box-shadow: 0 0 12px rgba(255, 120, 70, 0.8); }
+
+/* İlk karşılaşma: ırk tanıtım kartı */
+.enc-intro { margin: 10px 0 12px; padding: 10px 12px; border-radius: 12px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 210, 140, 0.25); text-align: left; font-size: 13px; line-height: 1.45; }
+.enc-intro .tier { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; background: rgba(255, 255, 255, 0.1); margin-left: 6px; }
+.enc-intro .tier.kadim { background: rgba(232, 192, 96, 0.3); color: #ffe2a0; }
+.enc-intro .tier.gelişmiş { background: rgba(106, 200, 255, 0.2); color: #bfe8ff; }
+.enc-intro .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: middle; }
+.enc-intro .warn { color: #ffb070; margin-top: 6px; }
+.sel-war { color: #ffd9a0; }
+
+/* Komuta paneli: koloni kartları */
+#orders { max-height: 78vh; overflow-y: auto; width: min(360px, calc(100vw - 32px)); }
+.col-card { margin: 8px 0; padding: 8px 10px; border-radius: 10px; background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.08); }
+.col-card.here { border-color: rgba(125, 255, 138, 0.45); }
+.col-title { font-size: 13px; }
+.col-title span { opacity: 0.65; font-size: 11px; }
+.col-counts { font-size: 12px; opacity: 0.85; margin: 4px 0 6px; }
+.col-card .ord-row { margin-top: 4px; flex-wrap: wrap; }
+
+/* Gezegen bilgi kartı (gemideyken yaklaşınca) */
+#planet-card { position: absolute; right: 16px; top: 150px; width: 230px; padding: 9px 12px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); font-size: 12px; line-height: 1.5; pointer-events: none; backdrop-filter: blur(10px); }
+#planet-card b { font-size: 14px; }
+#planet-card .pc-sub { opacity: 0.65; font-size: 11px; }
+#planet-card .pc-bad { color: #ff9a7a; }
+#planet-card .pc-good { color: #9affb0; }
+@media (max-width: 820px) { #planet-card { top: auto; bottom: 230px; right: 10px; width: 200px; font-size: 11px; } }
+body.cockpit #planet-card { top: 110px; }
+
+/* Fırsat: yük kapsülü işareti */
+#opp-mark { position: absolute; z-index: 2; pointer-events: none; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; gap: 1px; }
+#opp-mark i { font-style: normal; font-size: 18px; color: #ffd27a; text-shadow: 0 0 10px rgba(255, 200, 110, 0.9); display: block; }
+#opp-mark b { font-weight: 500; font-size: 11px; color: #fff0d0; background: rgba(8, 10, 14, 0.65); padding: 1px 7px; border-radius: 999px; border: 1px solid rgba(255, 200, 110, 0.5); }
+#opp-mark span { font-size: 10px; color: #ffe2b0; }
+#opp-mark.edge b, #opp-mark.edge span { display: none; }
+
+.guide-h { margin: 14px 0 6px; font-size: 14px; letter-spacing: 0.04em; color: var(--amber); font-weight: 500; }
+.guide-steps { margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.55; color: var(--muted); }
+.guide-steps b { color: #f4ead8; font-weight: 500; }
+
+/* Biniş seçimi */
+.board-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; max-height: 46vh; overflow-y: auto; margin: 8px 0; }
+.board-list label { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 10px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.08); font-size: 13px; cursor: pointer; }
+.board-list label.cmd { border-color: rgba(255, 210, 120, 0.6); }
+.board-list label span { opacity: 0.7; font-size: 11px; margin-left: auto; }
+
+#save-dot { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); font-size: 11px; color: #9affb0; opacity: 0; transition: opacity 0.4s; pointer-events: none; }
+#save-dot.on { opacity: 0.85; }

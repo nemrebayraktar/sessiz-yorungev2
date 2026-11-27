@@ -1339,3 +1339,128 @@ export function buildDwelling(form: string, color: number, seed = 0) {
   }
   return g
 }
+
+/** Irka özel taret: kara (alçak, kalın namlu) ya da hava savunma (radar çanağı, yukarı bakan ikiz/dörtlü namlu).
+ *  Seviye 2 zırh yakası, seviye 3 ışıklı halka ve daha büyük gövde ekler. */
+export function buildTurret(form: string, color: number, kind: 'kara' | 'hava', lvl: number) {
+  const root = new Group()
+  const base = new Color(color)
+  const accent = kind === 'hava' ? 0x6af0ff : 0xffa040
+  const wall = new MeshStandardMaterial({ color: base.clone().multiplyScalar(0.8), roughness: 0.55, metalness: 0.35, flatShading: true })
+  const dark = new MeshStandardMaterial({ color: base.clone().multiplyScalar(0.35), roughness: 0.7, metalness: 0.4, flatShading: true })
+  const glow = new MeshBasicMaterial({ color: new Color(accent).multiplyScalar(1.6) })
+  glow.toneMapped = false
+  const steel = new MeshStandardMaterial({ color: 0x8a909c, roughness: 0.4, metalness: 0.7 })
+  // Gömülü temel.
+  const sink = new Mesh(new CylinderGeometry(1.15, 1.35, 1.0, 12), dark)
+  sink.position.y = -0.3
+  root.add(sink)
+  let foot: Mesh
+  switch (form) {
+    case 'astronaut':
+      foot = new Mesh(new SphereGeometry(1.15, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2), wall)
+      break
+    case 'colonist':
+      foot = new Mesh(new CylinderGeometry(0.9, 1.25, 0.9, 6), wall)
+      foot.position.y = 0.45
+      break
+    case 'shade':
+      foot = new Mesh(new ConeGeometry(1.2, 1.4, 5), wall)
+      foot.position.y = 0.7
+      break
+    case 'bighead':
+      foot = new Mesh(new SphereGeometry(0.95, 18, 12), wall)
+      foot.position.y = 0.55
+      foot.scale.y = 0.75
+      break
+    case 'crystal':
+      foot = new Mesh(new OctahedronGeometry(1.1, 0), wall)
+      foot.position.y = 0.55
+      foot.scale.y = 0.8
+      break
+    case 'belly':
+      foot = new Mesh(new TorusGeometry(0.75, 0.42, 8, 16), wall)
+      foot.rotation.x = Math.PI / 2
+      foot.position.y = 0.35
+      break
+    case 'sprout':
+      foot = new Mesh(new CylinderGeometry(0.55, 0.95, 1.2, 8), new MeshStandardMaterial({ color: 0x6a4a2a, roughness: 0.9, flatShading: true }))
+      foot.position.y = 0.6
+      break
+    case 'golem':
+      foot = new Mesh(new DodecahedronGeometry(1.0, 0), wall)
+      foot.position.y = 0.5
+      break
+    case 'regal':
+      foot = new Mesh(new CylinderGeometry(0.8, 1.15, 1.0, 8), new MeshStandardMaterial({ color: 0xe8c060, metalness: 0.85, roughness: 0.25 }))
+      foot.position.y = 0.5
+      break
+    default:
+      foot = new Mesh(new CylinderGeometry(1.0, 1.2, 0.6, 12), wall)
+      foot.position.y = 0.3
+  }
+  root.add(foot)
+  const post = new Mesh(new CylinderGeometry(0.3, 0.42, 1.0, 8), steel)
+  post.position.y = 1.1
+  root.add(post)
+  const head = new Group()
+  head.position.y = 1.75
+  root.add(head)
+  if (kind === 'kara') {
+    const box = new Mesh(new BoxGeometry(1.0, 0.55, 1.0), wall)
+    head.add(box)
+    const n = lvl >= 3 ? 2 : 1
+    for (let i = 0; i < n; i++) {
+      const barrel = new Mesh(new CylinderGeometry(0.13, 0.16, 1.6, 8), steel)
+      barrel.rotation.x = Math.PI / 2
+      barrel.position.set(n === 1 ? 0 : i === 0 ? -0.22 : 0.22, 0.02, 0.95)
+      head.add(barrel)
+      const tip = new Mesh(new CylinderGeometry(0.17, 0.17, 0.12, 8), glow)
+      tip.rotation.x = Math.PI / 2
+      tip.position.set(barrel.position.x, 0.02, 1.75)
+      head.add(tip)
+    }
+  } else {
+    const box = new Mesh(new CylinderGeometry(0.55, 0.6, 0.5, 10), wall)
+    head.add(box)
+    const dish = new Mesh(new SphereGeometry(0.55, 14, 6, 0, Math.PI * 2, 0, Math.PI / 2.6), steel)
+    dish.rotation.x = -2.2
+    dish.position.set(0, 0.55, -0.45)
+    head.add(dish)
+    const elev = new Group()
+    elev.rotation.x = -0.65
+    elev.position.y = 0.15
+    head.add(elev)
+    const n = lvl >= 3 ? 4 : 2
+    for (let i = 0; i < n; i++) {
+      const x = (i % 2 === 0 ? -1 : 1) * 0.2
+      const y = n === 4 ? (i < 2 ? 0.14 : -0.14) : 0
+      const barrel = new Mesh(new CylinderGeometry(0.07, 0.09, 1.9, 6), steel)
+      barrel.rotation.x = Math.PI / 2
+      barrel.position.set(x, y, 0.95)
+      elev.add(barrel)
+      const tip = new Mesh(new SphereGeometry(0.1, 6, 4), glow)
+      tip.position.set(x, y, 1.9)
+      elev.add(tip)
+    }
+  }
+  // Tür işareti: kara turuncu, hava camgöbeği halka.
+  const ring = new Mesh(new TorusGeometry(0.62, 0.05, 6, 20), glow)
+  ring.rotation.x = Math.PI / 2
+  ring.position.y = 1.45
+  root.add(ring)
+  if (lvl >= 2) {
+    const collar = new Mesh(new TorusGeometry(1.15, 0.16, 6, 18), dark)
+    collar.rotation.x = Math.PI / 2
+    collar.position.y = 0.55
+    root.add(collar)
+  }
+  if (lvl >= 3) {
+    const halo = new Mesh(new TorusGeometry(1.35, 0.06, 6, 28), glow)
+    halo.rotation.x = Math.PI / 2
+    halo.position.y = 0.2
+    root.add(halo)
+    root.scale.setScalar(1.15)
+  }
+  return { root, head }
+}

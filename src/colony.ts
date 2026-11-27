@@ -45,7 +45,7 @@ export const popGrowth = (level: number) => 0.04 + 0.03 * level
 export const waveHullMul = (n: number) => 1 + (n - 1) * 0.07
 
 export type InvaderKind = 'runner' | 'brute' | 'spitter' | 'queen'
-export type SettlerKind = 'settler' | 'archer' | 'guard'
+export type SettlerKind = 'settler' | 'archer' | 'guard' | 'worker' | 'commander'
 export type UnitKind = InvaderKind | SettlerKind
 
 export type InvaderSpec = {
@@ -73,7 +73,39 @@ export const SETTLER: Record<SettlerKind, InvaderSpec> = {
   settler: { name: 'Yancı', hull: 18, speed: 4.2, dmg: 3, reach: 2.2, radius: 0.65, scale: 1, color: 0xfff1c4, style: 'walk', score: 0, cool: 0.9 },
   archer: { name: 'Nişancı', hull: 20, speed: 3.2, dmg: 4, reach: 14, radius: 0.8, scale: 1, color: 0xbfe8ff, style: 'walk', score: 0, cool: 1.3 },
   guard: { name: 'Koruyucu', hull: 70, speed: 2.9, dmg: 10, reach: 3, radius: 1.15, scale: 1.3, color: 0xffd27a, style: 'walk', score: 0, cool: 1.2 },
+  commander: { name: 'Komutan', hull: 160, speed: 3.3, dmg: 16, reach: 3.4, radius: 1.3, scale: 1.45, color: 0xffd27a, style: 'walk', score: 0, cool: 1.0 },
+  worker: { name: 'İşçi', hull: 16, speed: 4.4, dmg: 2, reach: 2, radius: 0.6, scale: 0.95, color: 0xffb43a, style: 'walk', score: 0, cool: 1.1 },
 }
+
+/* ---------- Ekonomi ve ordu (B turu) ---------- */
+
+/** Koloni duruşu: işçi/asker oranı, dizilim ve eğitim hızı tek tıkla. */
+export type Posture = 'ekonomi' | 'savunma' | 'saldiri'
+export const POSTURES: { id: Posture; name: string; blurb: string }[] = [
+  { id: 'ekonomi', name: 'Ekonomi', blurb: 'Halkın çoğu işçi: yataklardan maden ve kristal taşır. Askerler işçilere eşlik eder.' },
+  { id: 'savunma', name: 'Savunma', blurb: 'Çoğu asker, taret önünde dizilir; taretler %25 sert vurur. Üretim azalır.' },
+  { id: 'saldiri', name: 'Saldırı hazırlığı', blurb: 'Kışla iki kat hızlı asker eğitir, ekip sınırı +2, birlikler hücumda. Üretim en az.' },
+]
+export const workerShare = (p: Posture | undefined) => (p === 'savunma' ? 0.25 : p === 'saldiri' ? 0.15 : 0.6)
+export const postureOrder = (p: Posture | undefined): ColonyOrder => (p === 'savunma' ? 'on' : p === 'saldiri' ? 'hucum' : 'serbest')
+/** Kışlada asker eğitimi: bedel ve süre (sn). */
+export const TRAIN_COST = { energy: 15, ore: 3, crystal: 0 }
+export const TRAIN_TIME = 14
+/** Eğitilmiş asker sınırı (seviye başına iki). */
+export const trainCap = (level: number) => level * 2
+/** Komutan: kışla sv3+, koloni başına bir; ekibe +%25 hasar ve yavaş iyileşme verir. */
+export const COMMANDER_COST = { energy: 60, ore: 10, crystal: 3 }
+export const COMMANDER_TIME = 30
+export const COMMANDER_NAMES = ['Ayaz', 'Bora', 'Doruk', 'Ece', 'Ilgın', 'Kaya', 'Mira', 'Nehir', 'Orkun', 'Selin', 'Tuna', 'Yaren']
+/** Uzaktaki koloninin işçi başına dakikalık üretimi. */
+export const WORKER_RATE = { ore: 0.9, crystal: 0.25 }
+
+/** Taret türü: kara (yerdeki saldırganlar) ya da hava savunma (gezegene yaklaşan gemiler). */
+export type TurretKind = 'kara' | 'hava'
+export const TURRET_MAX_LVL = 3
+export const turretUpCost = (lvl: number) => ({ energy: 25 * lvl, ore: 3 * lvl, crystal: lvl >= 2 ? 2 : 0 })
+export const turretLvlMul = (lvl: number) => 1 + 0.4 * (lvl - 1)
+export const AA_RANGE = 130
 
 /** Nüfusun çoğu yancıdır (küçük, zayıf, ırkın sade sürümü). Ana karakterler (koruyucu, nişancı)
  *  seviyeyle açılır: sv 2'de 1, sv 5'te 4. Baskın ekibinin kalbi bunlardır. */
@@ -116,6 +148,10 @@ export type Turret = {
   cool: number
   hull: number
   alive: boolean
+  /** Kara (varsayılan) ya da hava savunma. */
+  kind?: TurretKind
+  /** Seviye 1–3. */
+  lvl?: number
 }
 
 export type Colony = {
@@ -152,6 +188,18 @@ export type Colony = {
   besieged?: boolean
   /** Dizilim emri: serbest dolaşma, taret önü, taret arkası ya da hücum. */
   order?: ColonyOrder
+  /** Duruş (ekonomi / savunma / saldırı hazırlığı). */
+  posture?: Posture
+  /** Kışlada eğitilmiş ek asker sayısı ve eğitim kuyruğu. */
+  trained?: number
+  trainQ?: number
+  trainT?: number
+  /** Uzakta çalışan işçilerin biriken üretimi. */
+  haulOre?: number
+  haulCry?: number
+  /** Komutan eğitimi ve doğmayı bekleyen komutan. */
+  cmdT?: number
+  cmdWaiting?: number
 }
 
 export type ColonyOrder = 'serbest' | 'on' | 'arka' | 'hucum'
@@ -190,4 +238,11 @@ export type Unit = {
   seq?: number
   /** Oyuncunun baskın ekibinden: oyuncuyu izler, yerlilere ve düşman üssüne saldırır. */
   squad?: boolean
+  /** İşçi işi: yatağa yürü, kaz, üsse taşı. */
+  job?: 'go' | 'dig' | 'back'
+  jobT?: number
+  depKey?: string
+  carry?: 'ore' | 'crystal' | null
+  /** Komutanın adı. */
+  name?: string
 }

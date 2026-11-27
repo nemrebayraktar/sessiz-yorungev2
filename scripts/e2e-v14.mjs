@@ -29,7 +29,7 @@ if (!man || man.icons?.length < 2) errors.push('manifest missing/invalid')
 
 // 1) Öğretici zincir sırası.
 const ids = await S(() => window.__sessiz.questIds())
-const want = ['fly', 'land', 'walk', 'mine', 'silent', 'scan', 'scout', 'home', 'fortify', 'squad', 'order', 'wave', 'upgrade', 'gate', 'meet', 'outpost', 'capture', 'avlu', 'free']
+const want = ['fly', 'land', 'walk', 'mine', 'silent', 'scan', 'scout', 'home', 'fortify', 'squad', 'order', 'wave', 'airdef', 'upgrade', 'gate', 'meet', 'outpost', 'aa', 'capture', 'avlu', 'free']
 if (ids.join() !== want.join()) errors.push(`quest chain ${ids.join()}`)
 
 // 2) Kaynak toplama: Ay'da yatağa yürü ve kaz → 'mine' görevi biter.

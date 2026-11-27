@@ -33,6 +33,7 @@
           <h1>Sessiz Yörünge</h1>
           <p class="tag">Duyulma. Avlanma.</p>
           <div class="row">
+            <button id="btn-continue" class="primary hidden" type="button">Devam et</button>
             <button id="btn-start" class="primary" type="button">Başla</button>
             <button id="btn-controls" type="button">Kontroller</button>
             <button id="btn-settings" type="button">Ayarlar</button>
@@ -95,6 +96,7 @@
         <div id="quest-mark" class="hidden" aria-hidden="true"><i>◆</i><span id="quest-dist"></span></div>
         <div id="base-mark" class="hidden" aria-hidden="true"><i>⌂</i><b id="base-mark-name">Üssün</b><span id="base-mark-dist"></span></div>
         <div id="dep-mark" class="hidden" aria-hidden="true"><i>⛏</i><span id="dep-dist"></span></div>
+        <div id="opp-mark" class="hidden" aria-hidden="true"><i>▲</i><b>Yük kapsülü</b><span id="opp-dist"></span></div>
         <div id="ship-mark" class="hidden" aria-hidden="true"><i>▲</i><b>Gemin</b><span id="ship-dist"></span></div>
         <div id="celebrate" aria-live="polite"><strong id="cel-title"></strong><span id="cel-sub"></span></div>
         <div id="lore-card" class="hidden" aria-live="polite"><p id="lore-name" class="eyebrow"></p><p id="lore-text"></p></div>
@@ -103,6 +105,8 @@
           <div class="track hull"><i id="base-core-fill"></i></div>
           <p id="base-line"></p>
         </div>
+        <div id="planet-card" class="hidden"></div>
+        <div id="save-dot" aria-hidden="true">● kaydedildi</div>
         <div id="heat" class="hidden"><span id="heat-txt">Isı</span><i id="heat-fill"></i></div>
         <p id="unlock"></p>
         <p id="upgrade-hint" class="hidden">⚙ Yeni parça için kaynak var — bir gezegene in, gemine yürü ve U'ya bas</p>
@@ -177,6 +181,23 @@
           <button type="button" data-act="ab2" class="ship-only ab more">H</button>
           <button type="button" data-act="turret" class="foot-only more">Taret</button>
           <button type="button" data-act="order" class="foot-only more order-only">Emir</button>
+          <button type="button" data-act="order" class="ship-only more">Komuta</button>
+        </div>
+      </div>
+
+      <div id="boarding" class="overlay hidden">
+        <div class="panel">
+          <p class="eyebrow">Biniş</p>
+          <h2>Kimler binsin?</h2>
+          <p id="board-cap" class="fine"></p>
+          <div id="board-list" class="board-list"></div>
+          <div class="enc-grid">
+            <button id="board-best" type="button">En iyileri al</button>
+            <button id="board-all" type="button">Sığanları al</button>
+          </div>
+          <p id="board-left" class="fine"></p>
+          <button id="board-go" class="primary" type="button">Bin ve kalk</button>
+          <button id="board-x" type="button">Vazgeç</button>
         </div>
       </div>
 
@@ -208,6 +229,7 @@
           </div>
           <div id="sel-stats"></div>
           <p id="sel-ability" class="fine"></p>
+          <p id="sel-war" class="fine sel-war"></p>
           <p id="sel-legend" class="legend-tag hidden">Efsane · zor kazanılan</p>
           <p id="sel-fact" class="fine"></p>
           <p id="sel-pilot" class="sr-only"></p>
@@ -263,15 +285,29 @@
             <li><kbd>F</kbd><span>Yüzeyde yumruk. Uzayda filoyla kapış.</span></li>
             <li><kbd>Boşluk</kbd><span>Yüzeyde zıpla. Küçük gezegende yükselir, büyükte alçalır.</span></li>
             <li><kbd>B</kbd><span>Yüzeyde üs kur (kendi gezegenin) ya da karakol kur (başka gezegen). Üsün yanında: onar / yükselt.</span></li>
-            <li><kbd>T</kbd><span>Üssün yanında taret kur. Taretler uzaylı dalgalarını kendi vurur.</span></li>
+            <li><kbd>T</kbd><span>Üssün yanında kara tareti kur (yerdeki saldırganı vurur). Bir taretin yanında T: taret yükselt (3 seviye).</span></li>
+            <li><kbd>Shift</kbd><kbd>T</kbd><span>Hava savunma tareti kur: gezegene yaklaşan gemileri vurur.</span></li>
+            <li><kbd>Y</kbd><span>Komuta paneli: kolonilerin, asker/işçi/taret sayıları, duruş (Ekonomi / Savunma / Saldırı hazırlığı), kışlada asker eğit.</span></li>
+            <li><kbd>Shift</kbd><kbd>L</kbd><span>Doğrudan kendi üssünün yanına in</span></li>
             <li><kbd>J</kbd><span>Görev günlüğü: hikâye ve görevler</span></li>
             <li><kbd>Sağ tık</kbd><kbd>Z</kbd><span>Basılı tutup fareyi oynat: kamerayı karakterin / durmuş geminin çevresinde döndür, yüzünü gör</span></li>
             <li><kbd>U</kbd><span>Yüzeyde geminin yanında: gemiye parça tak (E de olur)</span></li>
-            <li><kbd>K</kbd><span>Kendi üssünün yanında: baskın ekibi topla / geri bırak</span></li>
+            <li><kbd>K</kbd><span>Kendi üssünün yanında: baskın ekibi topla / geri bırak (ekip gemine biner)</span></li>
             <li><kbd>N</kbd><span>Sağ alttaki radar ile sistem haritası arasında geç (radara tıklamak da olur)</span></li>
             <li><kbd>M</kbd><span>Sesi kapat / aç</span></li>
           </ul>
           <p class="fine desk-only">Sol üstteki görev kartı sıradaki işi, ekrandaki ◆ işareti nereye gideceğini gösterir; karta tıklarsan (ya da J) görev günlüğü açılır. Yüzeyde kürenin çevresinde yürürsün; hareket kameraya göredir. Uzaylı dalgaları üssüne kendiliğinden gelir. Başka gezegende karakol kurmak için önce oranın yerlilerini yen. Düşman üssüne inince tüm savunmacıları hazır bekler; savunmacıları ve taretleri düşürürsen üs teslim olur ve senin olur. Taret ve birliklerin uzaktaki vuruşları sağ üstteki olay akışında görünür.</p>
+          <h3 class="guide-h">İşgal nasıl yapılır</h3>
+          <ol class="guide-steps">
+            <li><b>Ekip topla:</b> kendi üssünün çekirdeğinin yanında K (dokunmatik: Ekip). Ekip gemine biner; kalabalıksa eşlik gemileri de gelir.</li>
+            <li><b>Hedefi incele:</b> düşman gezegenine yaklaşınca sağdaki bilgi kartı asker, kara ve hava taret sayısını gösterir.</li>
+            <li><b>Hava savunmasını kır:</b> camgöbeği halkalı hava savunma taretleri gemini vurur. Yörüngeden ateş ederek düşür; canın azalınca menzilden (~130) çık, kalkanın dolsun.</li>
+            <li><b>İn:</b> L ile in; ekibin seninle iner. Kara taretlerini ve savunmacıları birlikte yenin. Y panelinde ekibe "Saldır" emri verebilirsin.</li>
+            <li><b>Teslim al:</b> savunmacılar ve taretler düşünce üs teslim olur; ekibin yeni koloninin ilk halkı olur. Çekirdeği yıkarsan gezegen boşalır, kendi karakolunu kurarsın.</li>
+            <li><b>Kayıpları yerine koy:</b> kendi üssünde kışla (sv2+) asker eğitir: Y → Asker eğit. Saldırı öncesi koloniyi "Saldırı hazırlığı"na al: eğitim iki kat hızlı, ekip sınırı +2.</li>
+          </ol>
+          <h3 class="guide-h">Ekonomi</h3>
+          <p class="fine">Halkının bir kısmı işçidir: yataklara yürür, kazar, madeni ve kristali üsse taşır; askerler onlara eşlik eder. Uzaktaki kolonilerin işçileri de dakikada bir üretir. Duruş işçi/asker oranını belirler. Maden: taret, üs yükseltmesi, parça. Kristal: ileri kademe/efsane parçalar, üst seviye üsler, taret seviye 2–3.</p>
           <button id="controls-close" class="primary" type="button">Kapat</button>
         </div>
       </div>
@@ -330,6 +366,7 @@
           <h2 id="enc-leader">Lider</h2>
           <p class="enc-line">“<span id="enc-line"></span>”</p>
           <p class="fine"><span id="enc-stance"></span> · <span id="enc-power"></span></p>
+          <div id="enc-intro" class="enc-intro hidden"></div>
           <div id="enc-choices" class="enc-grid">
             <button id="enc-peace" type="button">Barış teklif et</button>
             <button id="enc-trade" type="button">Ticaret yap</button>

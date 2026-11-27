@@ -54,11 +54,13 @@ Geliştirmeler: gövde, kalkan, silah, motor, gizlilik. Motor itişi artırır, 
 | `L` | Gezegene in (geminin altına; üssüne ~150 birimden yakınsan üssün yanına) / yüzeyde gemiye bin |
 | `Shift+L` | Doğrudan kendi üssünün yanına in (Harita → "⌂ Üsse in" de aynı) |
 | `B` | Yüzeyde üs ya da karakol kur; üssün yanında onar / yükselt |
-| `T` | Yüzeyde: üssün yanında taret kur · Gemide: tarama (filoları ve kaynak yataklarını gösterir, görünürlüğü artırır) |
+| `T` | Yüzeyde: üssün yanında kara tareti kur (taretin yanında: yükselt, 3 seviye) · Gemide: tarama |
+| `Shift+T` | Yüzeyde: hava savunma tareti kur (gezegene yaklaşan gemileri vurur) |
 | `V` | Sessiz süzülme: motor kapalı, yavaş ama neredeyse görünmez |
 | `O` | Diplomasi paneli (hediye, ticaret, ittifak, haraç, sömürge, savaş) |
 | `P` | Fotoğraf modu (sürükle: döndür, tekerlek: yakınlaş, filtre, kaydet) |
-| `Y` | Emirler paneli (dizilim) |
+| `Y` | Komuta paneli: koloniler, asker/işçi/taret sayıları, duruş (Ekonomi / Savunma / Saldırı), asker eğit, komutan yetiştir (gemide de açılır) |
+| `Shift+L` (yayayken) | Biniş seçimi: kimler binsin, kalanlar garnizon |
 | `1`–`4` | Üs birlikleri: Serbest / Taret önü / Taret arkası / Hücum |
 | `5`–`7` | Ekip: Takip / Bekle / Saldır |
 | `E` / sol tık | Yüzeyde, park ettiğin geminin yanında: gemi parçaları (her kademede iki seçenek, 5. kademe ırka özel efsane parça) |

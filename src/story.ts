@@ -149,11 +149,13 @@ export type QuestId =
   | 'fortify'
   | 'order'
   | 'wave'
+  | 'airdef'
   | 'upgrade'
   | 'gate'
   | 'meet'
   | 'outpost'
   | 'squad'
+  | 'aa'
   | 'capture'
   | 'avlu'
   | 'free'
@@ -268,6 +270,14 @@ export const QUESTS: QuestText[] = [
     touch: 'Üste kal; sayaç bitince dalga gelir. Yumruk ve Yetenek düğmeleri.',
   },
   {
+    id: 'airdef',
+    chapter: 'Bölüm 3 · Yuva',
+    title: 'Hava saldırısını püskürt',
+    story: 'İki tür taret var. Kara tareti (T) yerdeki saldırganı vurur; hava savunma tareti (Shift+T) gezegene yaklaşan gemileri. Şimdi düşman akıncıları üssünü yukarıdan bombalamaya geliyor.',
+    hint: 'Çekirdeğin yanında Shift+T ile hava savunma tareti kur. Akıncılar gelince taretin vurur; istersen gemine binip F ile sen de kapış.',
+    touch: 'Çekirdeğin yanında Taret düğmesi (önce hava savunma kurar). Akıncılar gelince taretin vurur; istersen gemine bin ve kapış.',
+  },
+  {
     id: 'upgrade',
     chapter: 'Bölüm 3 · Yuva',
     title: 'Gemine parça tak',
@@ -300,12 +310,20 @@ export const QUESTS: QuestText[] = [
     touch: 'Bir gezegene in, yerlileri yen, sonra Üs düğmesiyle karakol kur.',
   },
   {
+    id: 'aa',
+    chapter: 'Bölüm 5 · İşgal',
+    title: 'Hava savunmasını kır: {target}',
+    story: 'Düşman üslerinin camgöbeği halkalı hava savunma taretleri yaklaşan gemiyi vurur, seni de. Ekibini indirmeden önce yörüngeden ateş ederek onları düşür.',
+    hint: '◆ hedef üssün üstünde uç; camgöbeği halkalı taretlere ateş et. Can azalırsa menzilden (~130) çık, kalkan dolsun.',
+    touch: '◆ hedef üssün üstünde uç; camgöbeği halkalı taretlere ateş et. Can azalırsa uzaklaş, kalkan dolsun.',
+  },
+  {
     id: 'capture',
-    chapter: 'Bölüm 5 · Baskın',
+    chapter: 'Bölüm 5 · İşgal',
     title: 'Bir düşman üssünü ele geçir: {target}',
     story: 'Düşman üssü tüm savunmacılarıyla bekler. Hepsini ve taretlerini düşürürsen üs teslim olur ve senin olur. Çekirdeği yıkarsan da (yumrukla ya da gemiden) adım tamamlanır; boş gezegene kendi karakolunu kurarsın. Herhangi bir düşman üssü sayılır.',
-    hint: 'Ekibinle düşman gezegenine in; savunmacıları ve taretleri yen.',
-    touch: 'Ekibinle düşman gezegenine in; savunmacıları ve taretleri yen.',
+    hint: 'Ekibinle (K) düşman gezegenine in; kara taretlerini ve savunmacıları yen. Kayıpları kışlada yerine koy: Y → Asker eğit.',
+    touch: 'Ekibinle düşman gezegenine in; kara taretlerini ve savunmacıları yen. Kayıpları kışlada yerine koy: Emir → Asker eğit.',
   },
   {
     id: 'avlu',
