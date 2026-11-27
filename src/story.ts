@@ -256,10 +256,10 @@ export const QUESTS: QuestText[] = [
   {
     id: 'order',
     chapter: 'Bölüm 3 · Yuva',
-    title: 'Birliklerini diz',
-    story: 'Halkın emrini bekliyor. Taretlerin önüne dizilirlerse düşmanı ateşe çekerler; arkasında beklerlerse daha az yara alırlar.',
-    hint: 'Y ile Emirler panelini aç. Üs birlikleri için 2 (taret önü) ya da 3 (taret arkası), ekibin için 5 takip / 6 bekle / 7 saldır.',
-    touch: 'Emir düğmesine bas ve bir dizilim seç.',
+    title: 'Komuta panelini tanı (Y)',
+    story: 'Y komuta panelidir; yürürken de uçarken de açılır. Üç bölümü var. Üstte bulunduğun üssün dizilimi: taret önü (düşmanı ateşe çeker), taret arkası (az yara alır), hücum. Ortada yanındaki ekibin emri: takip, bekle, saldır. Altta bütün kolonilerin: kaç asker, işçi ve taret var; tek tıkla duruş (Ekonomi = çok işçi, çok kaynak · Savunma = çok asker, sert taret · Saldırı hazırlığı = hızlı eğitim, büyük ekip), kışlada asker eğit, komutan yetiştir.',
+    hint: 'Y ile paneli aç; "Kolonilerin" bölümünde ana üssüne bir duruş seç ya da üstte bir dizilim seç (1–4).',
+    touch: 'Emir düğmesine bas; "Kolonilerin" bölümünde bir duruş ya da üstte bir dizilim seç.',
   },
   {
     id: 'wave',
@@ -289,7 +289,7 @@ export const QUESTS: QuestText[] = [
     id: 'gate',
     chapter: 'Bölüm 4 · Komşular',
     title: 'Solucan deliğinden geç: {target}',
-    story: 'Dönen mor girdap ve çevresindeki altı direk: solucan deliği. Dikkat: başka sistemde çok daha çabuk görünür olursun.',
+    story: 'Dönen mor girdap ve çevresindeki altı direk: solucan deliği (eşik). Her eşik başka bir sisteme açılır; hepsi sonunda galaksinin ortasındaki kara deliğe, Sessiz Avlu\'ya bağlanır. Sol üstteki Harita düğmesi bütün yolları gösterir. Dikkat: başka sistemde çok daha çabuk görünür olursun.',
     hint: '◆ işaretindeki solucan deliğine dal.',
     touch: '◆ işaretindeki solucan deliğine dal.',
   },

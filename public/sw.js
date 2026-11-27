@@ -1,7 +1,7 @@
 /* Sessiz Yörünge çevrimdışı önbelleği.
    Sayfa (HTML) önce ağdan gelir ki yeni sürüm hemen görünsün; ağ yoksa önbellekten açılır.
    Derlenmiş dosyaların adında içerik özeti olduğundan önce önbellekten verilir. */
-const CACHE = 'sessiz-yorunge-v15'
+const CACHE = 'sessiz-yorunge-v16'
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['./', './manifest.webmanifest', './icon-192.png', './favicon.svg'])).catch(() => {}))

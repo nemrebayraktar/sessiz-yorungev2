@@ -90,8 +90,9 @@ export function resolve(choice: Choice, p: Persona, r: Relation, power: number, 
       return { fight: false, leave: true, rel: 6, cost: { energy: price }, line: 'Kabul. Bu sefer.' }
     }
     case 'demand': {
-      const chance = 0.25 + (power - 1) * 0.45 - p.pride * 0.3
-      if (power > 1.15 && roll < chance) return { fight: false, leave: true, rel: -15, gain: { energy: 10 * fleetSize, ore: 4 * fleetSize }, line: 'Al ve git. Bunu unutmayacağız.' }
+      // Zayıfken de istenebilir; şansı düşüktür (reddederse saldırırlar).
+      const chance = Math.max(0.06, 0.25 + (power - 1) * 0.45 - p.pride * 0.3)
+      if (roll < chance) return { fight: false, leave: true, rel: -15, gain: { energy: 10 * fleetSize, ore: 4 * fleetSize }, line: 'Al ve git. Bunu unutmayacağız.' }
       return { fight: true, leave: false, rel: -12, line: p.angry }
     }
     case 'trade':

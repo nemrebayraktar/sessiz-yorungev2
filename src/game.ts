@@ -346,6 +346,8 @@ const vU = new Vector3()
 const vV = new Vector3()
 const qF = new Quaternion()
 const eTmp = new Euler()
+/** Yayayken varsayılan bakış eğimi (hafif aşağı, karakterin üstünden). */
+const FOOT_PITCH0 = -0.21
 const qA = new Quaternion()
 /** Güneş ışığının geldiği uzak nokta (şehir ışıkları gece yüzünde yanar). */
 const SUN_FAR = new Vector3(48, 32, 18).multiplyScalar(1e5)
@@ -932,7 +934,7 @@ class Game {
     document.addEventListener('pointerlockchange', () => {
       const locked = document.pointerLockElement === this.renderer.domElement
       // Diyalog, brifing, emir/diplomasi paneli ya da fotoğraf modu için imleç serbest bırakılınca oyun duraklamaz.
-      const panel = this.encounter || this.briefing || this.photo || this.orderOpen || !must<HTMLElement>('diplo').classList.contains('hidden') || !must<HTMLElement>('boarding').classList.contains('hidden')
+      const panel = this.encounter || this.briefing || this.photo || this.orderOpen || this.cine || !must<HTMLElement>('diplo').classList.contains('hidden') || !must<HTMLElement>('boarding').classList.contains('hidden')
       if (!locked && (this.mode === 'map' || this.mode === 'combat') && !this.suppressPause && !panel) this.pause()
     })
   }
@@ -1106,6 +1108,11 @@ class Game {
 
   private updateMap(dt: number) {
     this.updatePlanets(dt)
+    if (this.cine) {
+      this.tickCine(dt)
+      this.refreshHud()
+      return
+    }
     // Karşılaşma diyaloğu ya da fotoğraf modu açıkken dünya durur.
     if (this.holdPose || this.encounter || this.photo || this.briefing) {
       if (this.encounter) this.encounterKeys()
@@ -1850,6 +1857,7 @@ class Game {
     fleet.talked = true
     const p = PERSONA[fac]
     this.domSet('enc-race', `${factionName(fac)} · ${fleet.count} gemi`)
+    this.racePreview(first ? fac : null)
     {
       // İlk karşılaşma: ırk tanıtım kartı (gelişmişlik, gemiler, savaş biçimi, caydırıcı yetenek).
       const w = WAR[fac]
@@ -1875,8 +1883,8 @@ class Game {
       b.disabled = !ok
     }
     set('enc-peace', 'Barış teklif et')
-    set('enc-pay', `Haraç öde (${pay} enerji)`, this.energy >= pay)
-    set('enc-demand', 'Haraç iste', ratio > 1.15)
+    set('enc-pay', `Haraç öde (${pay} enerji değeri)`)
+    set('enc-demand', ratio > 1.15 ? 'Haraç iste' : 'Haraç iste (riskli)')
     set('enc-trade', 'Ticaret yap', r.rel >= 0)
     set('enc-attack', 'Saldır')
     set('enc-flee', 'Geri çekil')
@@ -1901,9 +1909,27 @@ class Game {
       must<HTMLElement>('enc-choices').classList.add('hidden')
       return
     }
+    if (choice === 'pay') {
+      // Haraç enerjiyle, yetmezse madenle (4) ve kristalle (9) ödenir.
+      const price = 12 * enc.fleet.count
+      if (this.energy + this.ore * 4 + this.crystal * 9 < price) {
+        this.domSet('enc-line', `Bu kadar kaynağın yok: ${price} enerji değeri gerekir (maden 4, kristal 9 sayılır).`)
+        this.audio.ui()
+        return
+      }
+    }
     const out = resolve(choice, p, r, this.powerRatio(enc.fleet), enc.fleet.count, Math.random())
     bump(r, out.rel)
-    if (out.cost?.energy) this.energy = Math.max(0, this.energy - out.cost.energy)
+    if (out.cost?.energy) {
+      let due = out.cost.energy
+      const e = Math.min(this.energy, due)
+      this.energy -= e
+      due -= e
+      const o = Math.min(this.ore, Math.ceil(due / 4))
+      this.ore -= o
+      due -= o * 4
+      if (due > 0) this.crystal = Math.max(0, this.crystal - Math.ceil(due / 9))
+    }
     if (out.gain) this.addRes(out.gain)
     this.domSet('enc-line', out.line)
     this.domSet('enc-stance', `${stance(r)} · ilişki ${Math.round(r.rel)}`)
@@ -1981,6 +2007,7 @@ class Game {
   }
 
   closeEncounter() {
+    this.racePreview(null)
     must<HTMLElement>('encounter').classList.add('hidden')
     if (!this.touchy()) this.input.requestLock()
     const after = this.encounterAfter
@@ -2362,7 +2389,7 @@ class Game {
       case 'avlu': {
         if (this.universeId !== 'avlu') return false
         const hole = this.holes.find((h) => h.kind === 'hole')
-        return Boolean(hole && this.pos.distanceTo(hole.pos) < hole.rs * 14)
+        return Boolean(hole && this.pos.distanceTo(hole.pos) < hole.rs * 7)
       }
       default:
         return false
@@ -2391,7 +2418,7 @@ class Game {
     if (!quiet) {
       // Görev tamamlanınca kısa bir kutlama, ardından yeni görevin brifingi (dünya durur, okunmadan geçilmez).
       this.briefPending = this.questIdx
-      this.briefT = 1.3
+      this.briefT = 3.2
       document.getElementById('quest')?.classList.add('fresh')
     }
     if (this.quest().id === 'aa') {
@@ -2404,6 +2431,7 @@ class Game {
       }
     }
     if (this.quest().id === 'airdef') this.bomberT = 35
+    if (this.quest().id === 'fortify' && !this.save.settings.guide && this.testBrief && !quiet) this.tourPending = !this.tourDone
     if (this.quest().id === 'wave') {
       // Dalga görevi başlayınca bekletmeden ilk dalga yaklaşır.
       const homeC = this.homeColony()
@@ -2507,6 +2535,10 @@ class Game {
         this.openBriefing(i)
       } else if (!this.save.settings.guide) this.briefPending = -1
     }
+    if (this.tourPending && !this.briefing && this.layer === 'foot' && this.mode === 'map' && !this.fading && !this.encounter) {
+      this.tourPending = false
+      this.coreTour()
+    }
     if (this.layer === 'foot' && this.footSpeed > 0.5) this.questWalk += this.footSpeed * dt
     if (this.layer === 'ship' && this.silent && this.mode === 'map') this.questSilentT += dt
     if (this.quest().id === 'scout') this.tickScout(dt)
@@ -2568,6 +2600,73 @@ class Game {
     must<HTMLElement>('briefing').classList.add('hidden')
     this.snapCamera = true
     window.setTimeout(() => document.getElementById('quest')?.classList.remove('fresh'), 2500)
+    if (this.quest().id === 'fortify' && !this.tourDone) this.tourPending = true
+  }
+
+  /* ---------- Tanıtım çekimi: kamera bir yeri (çekirdek) dolaşır, altyazılar anlatır ---------- */
+  cine: { t: number; caps: string[]; each: number; at: Vector3; up: Vector3; radius: number; height: number } | null = null
+  tourDone = false
+  tourPending = false
+
+  startCine(at: Vector3, up: Vector3, caps: string[], radius = 16, height = 7, each = 4.2) {
+    this.cine = { t: 0, caps, each, at: at.clone(), up: up.clone().normalize(), radius, height }
+    this.input.exitLock()
+    document.body.classList.add('cine-on')
+    must<HTMLElement>('cine').classList.remove('hidden')
+    this.domSet('cine-cap', caps[0])
+  }
+
+  private endCine() {
+    this.cine = null
+    document.body.classList.remove('cine-on')
+    must<HTMLElement>('cine').classList.add('hidden')
+    this.snapCamera = true
+    if (!this.touchy() && this.mode === 'map') this.input.requestLock()
+  }
+
+  /** Çekim karesi: döner kamera + altyazı; Enter/Boşluk/dokunuş sonraki altyazıya geçer. */
+  private tickCine(dt: number) {
+    const c = this.cine
+    if (!c) return
+    const skip = this.input.pressed('Enter') || this.input.pressed('Space') || this.input.pressed('Escape') || this.cineTap
+    this.cineTap = false
+    const idx0 = Math.floor(c.t / c.each)
+    c.t += dt
+    if (skip) c.t = (idx0 + 1) * c.each
+    const idx = Math.floor(c.t / c.each)
+    if (idx >= c.caps.length) {
+      this.endCine()
+      return
+    }
+    if (idx !== idx0) this.domSet('cine-cap', c.caps[idx])
+    // Kamera: yerden yükselen yavaş bir yörünge.
+    vO1.set(1, 0, 0)
+    if (Math.abs(vO1.dot(c.up)) > 0.9) vO1.set(0, 0, 1)
+    vO1.addScaledVector(c.up, -vO1.dot(c.up)).normalize()
+    vO1.applyAxisAngle(c.up, c.t * 0.22)
+    this.camera.position.copy(c.at).addScaledVector(vO1, c.radius).addScaledVector(c.up, c.height + Math.sin(c.t * 0.3) * 1.5)
+    this.camera.up.copy(c.up)
+    this.camera.lookAt(vO2.copy(c.at).addScaledVector(c.up, 2.5))
+  }
+  cineTap = false
+
+  /** Çekirdek turu: üssün kalbini ve başka ırkların çekirdeklerini anlatır (bir kez). */
+  private coreTour() {
+    const planet = this.footPlanet
+    const c = this.colonyHere(planet)
+    if (!planet || !c || !this.mine(c) || this.tourDone) return false
+    this.tourDone = true
+    const up = this.worldDir(c.dir, planet, new Vector3())
+    const at = planet.pos.clone().addScaledVector(up, planet.def.radius)
+    this.startCine(at, up, [
+      'Bu senin çekirdeğin: üssünün kalbi. Halkın burada doğar, ekibin burada toplanır.',
+      'Çekirdeğin yanında: B üssü yükseltir, T kara tareti, Shift+T hava savunma tareti kurar, K ekip toplar.',
+      'Çevresindeki evler halkını barındırır. Üs büyüdükçe kışla (asker eğitimi), atölye (ucuz parça) ve gözcü kulesi (taret menzili) açılır.',
+      'Halkının bir kısmı işçidir: yataklara yürür, kazar, madeni ve kristali buraya taşır. Askerler onlara eşlik eder.',
+      'Diğer ırkların da tıpkı bunun gibi çekirdekleri var. Bir üssü almak için savunmacılarını ve taretlerini düşürürsün; çekirdek düşerse üs düşer.',
+      'Y komuta paneli: bütün kolonilerin, işçilerin, askerlerin ve taretlerin. Seyahat ederken de açılır.',
+    ], Math.max(18, this.coreReach(c) * 2.2), 9)
+    return true
   }
 
   /** Ekran ortasında kısa kutlama yazısı (görev tamamlandı). */
@@ -3804,6 +3903,7 @@ class Game {
     const flight = this.mode === 'map' || this.mode === 'combat' || this.mode === 'upgrade' || this.mode === 'pause'
     if (this.mode === 'select' || !flight) return
     const onFoot = this.layer === 'foot' && !(this.mode === 'combat' || (this.mode === 'pause' && this.pausedFrom === 'combat'))
+    if (this.cine) return
     if (onFoot && this.footPlanet) {
       this.footCamera(dt)
       return
@@ -4590,6 +4690,8 @@ class Game {
     this.nativesLeft.clear()
     this.rel = {}
     this.stranded = []
+    this.tourDone = false
+    this.avluSeen = false
     this.mined.clear()
     this.regrow.clear()
     this.botT = 40
@@ -4700,6 +4802,68 @@ class Game {
     this.hideControls()
   }
 
+  /* ---------- İlk karşılaşma kataloğu: ırkın kendisi ve gemisi, seçim ekranındaki gibi döner ---------- */
+  private preview: { raf: number; scene: Scene } | null = null
+  /** Önizleme çizicisi tek bir kez kurulur ve yeniden kullanılır (her karşılaşmada yeni WebGL bağlamı açmak tarayıcıyı çökertir). */
+  private previewR: WebGLRenderer | null = null
+  private racePreview(fac: OriginId | null) {
+    const canvas = document.getElementById('enc-canvas') as HTMLCanvasElement | null
+    if (this.preview) {
+      cancelAnimationFrame(this.preview.raf)
+      const old = this.preview
+      this.preview = null
+      old.scene.traverse((o) => (o as Mesh).geometry?.dispose())
+      this.disposeMats(old.scene as unknown as THREEGroup)
+    }
+    if (!canvas) return
+    canvas.classList.toggle('hidden', !fac)
+    if (!fac) return
+    if (!this.previewR) {
+      try {
+        this.previewR = new WebGLRenderer({ canvas, antialias: true, alpha: true })
+        this.previewR.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
+        this.previewR.setSize(520, 300, false)
+        this.previewR.outputColorSpace = SRGBColorSpace
+        this.previewR.toneMapping = ACESFilmicToneMapping
+      } catch {
+        canvas.classList.add('hidden')
+        return
+      }
+    }
+    const r = this.previewR
+    const scene = new Scene()
+    scene.add(new HemisphereLight(0xffffff, 0x2a2030, 1.4))
+    const key = new DirectionalLight(0xfff0d8, 2.2)
+    key.position.set(3, 5, 4)
+    scene.add(key)
+    const cam = new PerspectiveCamera(32, 520 / 300, 0.1, 100)
+    cam.position.set(0, 2.2, 9)
+    cam.lookAt(0, 1.1, 0)
+    const rig = buildCreature(originLook(fac))
+    rig.root.position.set(-2.1, 0, 0)
+    rig.root.scale.setScalar(1.35)
+    scene.add(rig.root)
+    const ship = buildShip(fac)
+    ship.root.position.set(1.9, 1.3, 0)
+    ship.root.scale.setScalar(0.85)
+    ship.cockpit.visible = false
+    ship.shield.visible = false
+    scene.add(ship.root)
+    const t0 = performance.now()
+    const tick = () => {
+      if (!this.preview || this.preview.scene !== scene) return
+      const t = (performance.now() - t0) / 1000
+      rig.root.rotation.y = Math.sin(t * 0.6) * 0.6
+      ship.root.rotation.y = t * 0.7
+      ship.root.position.y = 1.3 + Math.sin(t * 1.4) * 0.12
+      this.stepRig(rig, 0, false, 0)
+      if (!this.skipRender) r.render(scene, cam)
+      this.preview.raf = requestAnimationFrame(tick)
+    }
+    this.preview = { raf: 0, scene }
+    this.preview.raf = requestAnimationFrame(tick)
+  }
+
   /* ---------- Kayıt / Devam et ---------- */
   private saveT = 30
   private v3(v: Vector3): V3 {
@@ -4757,6 +4921,7 @@ class Game {
       squad: [...this.squad, ...this.units.filter((u) => u.alive && u.squad).map((u) => ({ kind: u.kind as SettlerKind, hull: u.hull, hullMax: u.hullMax }))],
       stranded: this.stranded.map((x) => ({ planetId: x.planetId, universe: x.universe, dir: this.v3(x.dir), crew: x.crew })),
       lastTalk: {},
+      flags: { tour: this.tourDone, avlu: this.avluSeen },
     }
   }
 
@@ -4850,6 +5015,8 @@ class Game {
     this.stranded = g.stranded.map((x) => ({ planetId: x.planetId, universe: x.universe as UniId, dir: new Vector3(...x.dir), crew: x.crew.map((m) => ({ kind: m.kind as SettlerKind, hull: m.hull, hullMax: m.hullMax })) }))
     this.buildEscorts()
     this.captured = g.captured
+    this.tourDone = Boolean(g.flags?.tour)
+    this.avluSeen = Boolean(g.flags?.avlu)
     this.questStart(g.questIdx, true)
     this.briefPending = -1
     this.briefing = false
@@ -5362,6 +5529,26 @@ class Game {
     frag.mesh.position.set(Math.cos(frag.angle) * frag.radius, frag.y, Math.sin(frag.angle) * frag.radius)
   }
 
+  /** Irkın kendi gemi modeli düşman olarak: kokpit/kalkan gizli, ışık yok; gövde malzemesi parlama için. */
+  private raceShipVisual(fac: OriginId) {
+    const ship = buildShip(fac)
+    ship.cockpit.visible = false
+    ship.shield.visible = false
+    ship.muzzle.visible = false
+    ship.engineLight.removeFromParent()
+    let bodyMat: MeshStandardMaterial | null = null
+    ship.body.traverse((o) => {
+      const m = (o as Mesh).material as MeshStandardMaterial | undefined
+      if (!bodyMat && m && m.isMeshStandardMaterial) bodyMat = m
+    })
+    const bm = (bodyMat ?? new MeshStandardMaterial({ color: WAR[fac].color })) as MeshStandardMaterial
+    bm.emissive.set(WAR[fac].color).multiplyScalar(0.25)
+    bm.emissiveIntensity = 0.55
+    ship.root.scale.setScalar(1)
+    ship.root.userData.ownGeo = true
+    return { root: ship.root, bodyMat: bm, eyeMat: new MeshBasicMaterial() }
+  }
+
   combatFaction: OriginId | null = null
   private spawnEnemies(count: number, threat: number, at?: Vector3, small = false, faction?: OriginId) {
     this.combatFaction = faction ?? null
@@ -5400,7 +5587,9 @@ class Game {
       const role: Enemy['role'] = small || giant || attack === 'well' || attack === 'gate' ? undefined : (['avci', 'bombaci', 'kalkan'] as const)[i % 3]
       if (role === 'bombaci') attack = 'homing'
       if (role === 'avci') attack = 'bolt'
-      const visual = human ? buildHumanFighter() : buildCuteAlien(attack === 'well' || attack === 'gate' ? 4 : i % 4, 1)
+      // Irkı belli olan filo kendi gemileriyle gelir (ilk karşılaşma kataloğunda gördüğün gemi).
+      const raceShip = Boolean(prof && !human && faction)
+      const visual = human ? buildHumanFighter() : raceShip ? this.raceShipVisual(faction as OriginId) : buildCuteAlien(attack === 'well' || attack === 'gate' ? 4 : i % 4, 1)
       const scale = (small ? 0.8 : giant ? (human ? 2.7 : 3.35) : human ? 1 : 1.05) * (role === 'avci' ? 0.85 : role === 'bombaci' ? 1.25 : role === 'kalkan' ? 1.15 : 1)
       visual.root.scale.setScalar(scale)
       if (role === 'avci') visual.bodyMat.emissive.set(0x8a1a10)
@@ -5413,7 +5602,7 @@ class Game {
         visual.root.add(bubble)
       }
       // Irk rengi: hangi ırkla dövüştüğün gemilerden anlaşılır.
-      if (prof && !human) visual.bodyMat.color.set(prof.color)
+      if (prof && !human && !raceShip) visual.bodyMat.color.set(prof.color)
       if (this.universeId === 'kizil' && !human && !prof) visual.bodyMat.color.set(0x6a2418)
       if (this.universeId === 'soluk' && !human) visual.bodyMat.emissive.set(0x123a4a)
       let weak: Mesh | null = null
@@ -5485,6 +5674,8 @@ class Game {
     for (const e of this.enemies) {
       this.combatRoot.remove(e.root)
       this.disposeMats(e.root)
+      // Irk gemileri kendi geometrilerini taşır (paylaşılmaz): onları da bırak.
+      if (e.root.userData.ownGeo) e.root.traverse((o) => (o as Mesh).geometry?.dispose())
     }
     this.enemies.length = 0
     this.skirmish = false
@@ -5517,7 +5708,7 @@ class Game {
     else if (kind === 'laser' || kind === 'chain') shot.mesh.scale.set(0.12, 0.12, 3.1)
     else shot.mesh.scale.set(1.35, 1.35, 1.6)
     const speed =
-      kind === 'laser' || kind === 'chain' ? 320 : kind === 'pellet' ? 150 : kind === 'rocket' ? 74 : kind === 'plasma' ? 102 : kind === 'goo' ? 38 : kind === 'homing' ? 82 : friendly ? 215 : 128
+      kind === 'laser' || kind === 'chain' ? 340 : kind === 'pellet' ? 230 : kind === 'rocket' ? (friendly ? 150 : 74) : kind === 'plasma' ? (friendly ? 200 : 102) : kind === 'goo' ? 38 : kind === 'homing' ? 82 : friendly ? 260 : 128
     shot.vel.set(dx, dy, dz).multiplyScalar(speed)
     shot.pos.set(ox + dx * 1.6, oy + dy * 1.6, oz + dz * 1.6)
     shot.prev.copy(shot.pos)
@@ -5581,11 +5772,17 @@ class Game {
     this.dom.fade.classList.add('on')
     window.setTimeout(() => {
       if (token !== this.fadeToken) return
-      apply()
-      this.fading = false
-      this.snapCamera = true
-      this.applyPresentation()
-      this.dom.fade.classList.remove('on')
+      try {
+        apply()
+      } catch (err) {
+        // Geçişte bir hata olsa bile ekran kararmış ve oyun kilitli kalmasın.
+        console.error('fade apply failed', err)
+      } finally {
+        this.fading = false
+        this.snapCamera = true
+        this.applyPresentation()
+        this.dom.fade.classList.remove('on')
+      }
     }, 420)
   }
 
@@ -5837,6 +6034,9 @@ class Game {
       this.openSelect()
     })
     must<HTMLButtonElement>('sel-go').addEventListener('click', () => this.beginStory())
+    must<HTMLElement>('cine').addEventListener('pointerdown', () => {
+      this.cineTap = true
+    })
     must<HTMLButtonElement>('btn-continue').addEventListener('click', () => {
       this.audio.ensure()
       this.audio.ui()
@@ -6716,8 +6916,24 @@ class Game {
       this.toast(this.isHome() ? `${uni.name}. Ev sistemi — kalkanın burada çabuk döner.` : `${uni.name}. ${uni.line}`)
       if (this.isHome() && this.tutorialAt('home')) this.spawnHomePatrols(Math.min(1, this.homePatrols))
       if (this.foreignHome(to)) this.raiseAmbush()
+      if (to === 'avlu' && !this.avluSeen) {
+        this.avluSeen = true
+        this.avluIntro()
+      }
       this.mirrorRun()
     })
+  }
+
+  avluSeen = false
+  /** Sessiz Avlu'ya ilk varış: kara deliğin ve ona bağlanan bütün eşiklerin tanıtımı. */
+  private avluIntro() {
+    const links = this.holes.filter((h) => h.kind === 'worm' && h.to).map((h) => UNIVERSES[h.to as UniId]?.name ?? h.to)
+    const text = [
+      "Galaksinin ortasındaki bu kara delik, Sessiz Avlu'nun kalbi. Bütün eşikler (solucan delikleri) bir ipliğin uçları gibi buraya bağlanır; her sistemden buraya, buradan her sisteme yol vardır.",
+      `Çevresindeki mor girdaplar diğer sistemlere açılır: ${links.join(', ')}.`,
+      'Kara deliğe yaklaştıkça zaman yavaşlar (sol üstteki zaman oranına bak) ve ışık bükülür. Olay ufkuna düşen hiçbir şey geri dönmez; kenarına kadar yaklaş, içine girme.',
+    ].join('\n')
+    this.showStory('Sessiz Avlu · Kavşak', text, 'Anladım')
   }
 
   private lensFocus() {
@@ -6793,11 +7009,13 @@ class Game {
         if (!enemy.alive) continue
         vA.subVectors(well.pos, enemy.pos)
         const dist = Math.max(0.4, vA.length())
-        if (enemy !== well.owner) {
-          enemy.vel.addScaledVector(vA, (60 / dist) * dt)
-          if (dist < WELL_EH) this.hurtEnemy(enemy, enemy.hull + enemy.shield + 1)
-          else if (dist < 16) this.hurtEnemy(enemy, 12 * dt)
-        }
+        // Açan gemi de dahil: olay ufkuna giren herkes parçalanır (açan daha zayıf çekilir, kaçmaya çalışır).
+        enemy.vel.addScaledVector(vA, ((enemy === well.owner ? 25 : 60) / dist) * dt)
+        if (dist < WELL_EH) {
+          this.fx.explosion(enemy.pos, 0xffe2b0, enemy.giant ? 2.4 : 1.4)
+          this.hurtEnemy(enemy, enemy.hull + enemy.shield + 1)
+          if (enemy === well.owner) this.toast('Amiral gemisi kendi kara deliğine düştü!')
+        } else if (dist < 16) this.hurtEnemy(enemy, 12 * dt)
       }
       for (let i = this.escorts.length - 1; i >= 0; i--) {
         if (this.escorts[i].position.distanceTo(well.pos) < WELL_EH + 1) this.loseEscort(i, 'Eşlik gemin kara deliğe düştü ve parçalandı.', true)
@@ -7188,7 +7406,7 @@ class Game {
   private shotAssist(fwd: Vector3): Vector3 | null {
     if (!this.fighting()) return null
     let best: Enemy | null = null
-    let bestA = 0.16
+    let bestA = 0.26
     const p = this.pickedTarget
     if (p?.alive) {
       vH.subVectors(p.pos, this.pos)
@@ -7210,7 +7428,7 @@ class Game {
     }
     if (!best) return null
     const d = best.pos.distanceTo(this.pos)
-    const speed = this.weapon === 'rocket' ? 74 : this.weapon === 'plasma' ? 102 : this.weapon === 'spread' ? 150 : 320
+    const speed = this.weapon === 'rocket' ? 150 : this.weapon === 'plasma' ? 200 : this.weapon === 'spread' ? 230 : 340
     vI.copy(best.pos).addScaledVector(best.vel, d / speed).sub(this.pos).normalize()
     return vI
   }
@@ -7238,6 +7456,7 @@ class Game {
     if (aim) vA.copy(aim)
     const mul =
       this.weaponMul *
+      1.45 *
       (this.originId === 'gliese' && this.weapon === 'plasma' ? 1.35 : 1) *
       (this.originId === 'kepler452' && this.weapon === 'chain' ? 1.2 : 1) *
       (this.powerT > 0 ? 1.28 : 1)
@@ -7245,19 +7464,19 @@ class Game {
     const dy = vA.y
     const dz = vA.z
     if (this.weapon === 'spread') {
-      this.fireCd = 0.46
+      this.fireCd = 0.36
       for (let i = 0; i < 5; i++) {
         vE.set(dx, dy, dz).applyAxisAngle(vC, (i - 2) * 0.1)
         this.spawnShot(true, vD, vE, 5 * mul, 'pellet')
       }
     } else if (this.weapon === 'rocket') {
-      this.fireCd = 0.62
+      this.fireCd = 0.45
       this.spawnShot(true, vD, vA, 28 * mul, 'rocket')
     } else if (this.weapon === 'plasma') {
-      this.fireCd = 0.5
+      this.fireCd = 0.34
       this.spawnShot(true, vD, vA, 22 * mul, 'plasma')
     } else if (this.weapon === 'chain') {
-      this.fireCd = 0.55
+      this.fireCd = 0.42
       const hops = this.originId === 'kepler452' ? 3 : 2
       const target = this.fighting() ? this.enemies.find((e) => e.alive && e.pos.distanceTo(this.pos) < 130) : undefined
       if (target) {
@@ -7848,6 +8067,8 @@ class Game {
     const orbiting = wish <= 0.08 && (this.touchy() || this.orbitKey())
     if (!orbiting) {
       if (look) this.footView.applyAxisAngle(vA, look)
+      // Yukarı/aşağı bakış: gökyüzündeki saldırıyı görebilmek için kamera yukarı dönebilir.
+      if (lookUp) this.lookPitch = clamp(this.lookPitch - lookUp, -0.6, 1.25)
       // Yürümeye başlayınca yörünge kamerası yumuşakça arkaya döner.
       this.orbitYaw *= Math.exp(-5 * dt)
       this.orbitPitch *= Math.exp(-5 * dt)
@@ -7936,21 +8157,32 @@ class Game {
     this.stepRig(this.walkerRig, jumping ? 0 : this.footSpeed, jumping, this.punchT)
   }
 
+  lookPitch = FOOT_PITCH0
   private footCamera(dt: number) {
     vA.copy(this.pos).sub(this.footPlanet ? this.footPlanet.pos : this.pos).normalize()
     vB.copy(this.footView)
     if (this.orbitYaw) vB.applyAxisAngle(vA, this.orbitYaw)
     // Dikey telefonda karakter ekranı kaplamasın: kamera biraz daha geride ve yukarıda.
     const narrow = this.camera.aspect < 1
-    const back = (narrow ? 7.8 : 5.4) * (1 - this.orbitPitch * 0.25)
-    const lift = (narrow ? 3.1 : 2.4) + this.orbitPitch * 3.2
+    const up = Math.max(0, this.lookPitch - FOOT_PITCH0)
+    const back = (narrow ? 7.8 : 5.4) * (1 - this.orbitPitch * 0.25) * (1 - up * 0.25)
+    const lift = Math.max(0.9, (narrow ? 3.1 : 2.4) + this.orbitPitch * 3.2 - up * 1.3)
     vC.copy(this.pos).addScaledVector(vA, lift).addScaledVector(vB, -back)
     const k = this.snapCamera ? 1 : 1 - Math.exp(-8 * dt)
     this.camera.position.lerp(vC, k)
     vD.subVectors(this.camera.position, this.pos)
     if (vD.dot(vB) > -1.2) this.camera.position.copy(this.pos).addScaledVector(vB, -back).addScaledVector(vA, lift)
     this.camera.up.copy(vA) // yüzeyde yukarı = gezegenin normali; gezegenin yanında kamera yan yatmaz
-    this.camera.lookAt(vE.copy(this.pos).addScaledVector(vA, 1.15).addScaledVector(vB, 0.4))
+    vE.copy(this.pos).addScaledVector(vA, 1.15).addScaledVector(vB, 0.4)
+    const tilt = this.lookPitch - FOOT_PITCH0
+    if (Math.abs(tilt) > 0.005) {
+      // Bakış eğimi: karakterin omzunun üstünden yukarı (gökyüzü) ya da aşağı; varsayılandan sürekli döner.
+      vF.subVectors(vE, this.camera.position).normalize()
+      vG.crossVectors(vF, vA).normalize()
+      vF.applyAxisAngle(vG, tilt)
+      vE.copy(this.camera.position).addScaledVector(vF, 8)
+    }
+    this.camera.lookAt(vE)
     this.snapCamera = false
     const target = 64
     this.camera.fov += (target - this.camera.fov) * (1 - Math.exp(-6 * dt))
@@ -8309,6 +8541,11 @@ class Game {
     root.add(core)
     c.core = core
     core.userData.blocks = this.coreFootprint(core, R)
+    {
+      let ext = 0
+      for (const b of core.userData.blocks as { dir: Vector3; r: number }[]) ext = Math.max(ext, this.arc(b.dir, c.dir, R) + b.r)
+      core.userData.reach = ext + 4.5
+    }
     // Üssün dibindeki büyük doğal yapıları gizle (anıt ve taretlerle çakışmasın).
     for (const f of planet.features) {
       const near = f.dir.angleTo(c.dir) < 26 / R + f.r
@@ -8468,6 +8705,12 @@ class Game {
 
   private toLocal(worldDir: Vector3, planet: Planet, out: Vector3) {
     return out.copy(worldDir).applyQuaternion(qB.copy(planet.mesh.quaternion).invert()).normalize()
+  }
+
+  /** Çekirdekle etkileşim mesafesi: anıtın gerçek ayak izinin kenarından ~4 birim (büyük anıtlarda içine girilemiyor). */
+  private coreReach(c: Colony) {
+    const r = c.core?.userData.reach as number | undefined
+    return Math.max(CORE_REACH, r ?? 0)
   }
 
   private coreDistance(c: Colony, planet: Planet) {
@@ -8911,6 +9154,10 @@ class Game {
     const head3 = document.createElement('h4')
     head3.textContent = 'Kolonilerin'
     box.append(head3)
+    const help = document.createElement('p')
+    help.className = 'ord-tip'
+    help.textContent = 'Duruş, halkın ne kadarının işçi ne kadarının asker olacağını seçer. Ekonomi: işçiler yataklardan maden/kristal taşır. Savunma: askerler taret önüne dizilir, taretler %25 sert. Saldırı hazırlığı: kışla iki kat hızlı, ekip +2. ⚔ asker · ⛏ işçi · ◈ kara taret · ✈ hava taret.'
+    box.append(help)
     const own = Object.values(this.colonies).filter((x): x is Colony => Boolean(x && this.mine(x)))
     own.sort((a, b) => Number(b.kind === 'main') - Number(a.kind === 'main'))
     for (const col of own) {
@@ -9185,7 +9432,7 @@ class Game {
       this.toast(`${factionName(c.owner)} üssü. Çekirdeğine vurup yıkmadan senin olmaz.`)
       return
     }
-    if (this.coreDistance(c, planet) > CORE_REACH) {
+    if (this.coreDistance(c, planet) > this.coreReach(c)) {
       this.toast('Çekirdeğe yaklaş.')
       return
     }
@@ -10211,7 +10458,7 @@ class Game {
     if (!planet) return
     const c = this.colonyHere(planet)
     const ground = this.units.filter((u) => u.alive && u.squad)
-    if (!c || !this.mine(c) || this.coreDistance(c, planet) > CORE_REACH * 2) {
+    if (!c || !this.mine(c) || this.coreDistance(c, planet) > this.coreReach(c) * 2) {
       this.toast(ground.length ? `Ekibin seninle (${ground.length}). Bir gezegene in, yerlilere ve düşman üssüne saldırsınlar.` : 'Ekip toplamak için kendi üssünün çekirdeğine yaklaş (K).')
       return
     }
@@ -10492,7 +10739,7 @@ class Game {
       return `B — ${main ? 'üs kur' : 'karakol kur'} (${main ? BASE_COST_HOME : OUTPOST_COST}) · ${tail}`
     }
     if (!this.mine(c)) return `${factionName(c.owner)} üssü — çekirdeğe vur (F) · ${tail}`
-    const near = this.coreDistance(c, planet) <= CORE_REACH
+    const near = this.coreDistance(c, planet) <= this.coreReach(c)
     if (near) {
       const act = c.hull < c.hullMax * 0.999 ? `onar (${REPAIR_COST})` : c.level < MAX_LEVEL ? `yükselt (${this.costText(this.colonyUpCost(c.level + 1))})` : 'üs tam'
       const crew = this.units.some((u) => u.alive && u.squad)
@@ -10517,9 +10764,8 @@ class Game {
     const crew = this.squadSize()
     this.domSet('squad-flag', `Ekip ${crew}`)
     must<HTMLElement>('squad-flag').classList.toggle('hidden', crew === 0)
-    const own = c && this.mine(c) && planet && this.coreDistance(c, planet) <= CORE_REACH * 2
+    const own = c && this.mine(c) && planet && this.coreDistance(c, planet) <= this.coreReach(c) * 2
     document.body.classList.toggle('squad-ready', Boolean(own))
-    if (this.orderOpen && this.layer !== 'foot') this.toggleOrders(false)
     document.body.classList.toggle('order-ready', this.layer === 'foot' && Boolean((c && this.mine(c)) || crew > 0))
     const sk = skillOf(this.originId)
     const skBtn = document.querySelector<HTMLButtonElement>('#touch-buttons button[data-act="skill"]')
@@ -12627,6 +12873,17 @@ class Game {
       trainCmd: (id: string) => {
         const c = game.colonies[id]
         return c ? game.trainCommander(c) : false
+      },
+      coreTour: () => {
+        game.tourDone = false
+        return game.coreTour()
+      },
+      cineOn: () => Boolean(game.cine),
+      cineSkip: () => {
+        game.cineTap = true
+      },
+      setPitch: (p: number) => {
+        game.lookPitch = p
       },
       flashTest: () => {
         const w = game.walker

@@ -98,6 +98,7 @@
         <div id="dep-mark" class="hidden" aria-hidden="true"><i>⛏</i><span id="dep-dist"></span></div>
         <div id="opp-mark" class="hidden" aria-hidden="true"><i>▲</i><b>Yük kapsülü</b><span id="opp-dist"></span></div>
         <div id="ship-mark" class="hidden" aria-hidden="true"><i>▲</i><b>Gemin</b><span id="ship-dist"></span></div>
+        <div id="cine" class="hidden" aria-live="polite"><p id="cine-cap"></p><small id="cine-skip">Enter / dokun: geç</small></div>
         <div id="celebrate" aria-live="polite"><strong id="cel-title"></strong><span id="cel-sub"></span></div>
         <div id="lore-card" class="hidden" aria-live="polite"><p id="lore-name" class="eyebrow"></p><p id="lore-text"></p></div>
         <div id="base-hud" class="hidden">
@@ -367,6 +368,7 @@
           <p class="enc-line">“<span id="enc-line"></span>”</p>
           <p class="fine"><span id="enc-stance"></span> · <span id="enc-power"></span></p>
           <div id="enc-intro" class="enc-intro hidden"></div>
+          <canvas id="enc-canvas" class="enc-canvas hidden" width="520" height="300"></canvas>
           <div id="enc-choices" class="enc-grid">
             <button id="enc-peace" type="button">Barış teklif et</button>
             <button id="enc-trade" type="button">Ticaret yap</button>

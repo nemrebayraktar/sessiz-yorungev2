@@ -66,6 +66,20 @@ const sig2 = await S(() => window.__sessiz.stateSig())
 console.log('sig', sig, sig2)
 for (const k of Object.keys(sig)) if (sig[k] !== sig2[k]) errors.push(`load mismatch ${k}: ${sig[k]} vs ${sig2[k]}`)
 
+// 5) Çekirdek turu (sinematik) açılır ve geçilir; gemideyken Y komuta paneli oyunu durdurmaz.
+await S((id) => window.__sessiz.landOnId(id), home)
+if (!(await S(() => window.__sessiz.coreTour()))) errors.push('core tour did not start')
+for (let i = 0; i < 10; i++) {
+  await S(() => window.__sessiz.cineSkip())
+  await page.waitForTimeout(120)
+}
+if (await S(() => window.__sessiz.cineOn())) errors.push('core tour did not end')
+await S(() => window.__sessiz.board())
+await page.keyboard.press('KeyY')
+await page.waitForTimeout(400)
+const ym = await S(() => [window.__sessiz.mode, document.getElementById('orders').classList.contains('hidden')])
+if (ym[0] !== 'map' || ym[1]) errors.push(`Y in ship: ${ym}`)
+
 await browser.close()
 if (errors.length) {
   console.error(errors.join('\n'))

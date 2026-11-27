@@ -270,3 +270,16 @@ Yaya modunda (`layer: 'foot'`) çalışır; mantık `game.ts` içinde "Üs savun
 - **Komutan** (`commander`): kışla sv3+, 60 enerji + 10 maden + 3 kristal, 30 sn; koloni başına bir; adı, sırtında sancağı, başında ışık halkası var. Ekipteyken herkes %25 sert vurur ve yavaşça iyileşir; ekip sınırına sayılmaz.
 - **Kayıt / Devam et** (`savegame.ts`): 30 sn'de bir ve önemli olaylarda (iniş, biniş, üs kazanma/kaybetme) otomatik kayıt (savaşta değil). Başlıkta "Devam et · ırk · dakika". Kaydedilenler: konum, kaynaklar, gemi parçaları, silahlar, görev adımı, bütün koloniler (seviye, taretler, duruş, eğitim), ilişkiler, yerliler, tükenen yataklar, ekip, mahsur ekipler.
 - Test: `scripts/e2e-v20.mjs`.
+
+## Aşama 19 (v16, oyuncu geri bildirimi)
+- **Yukarı bakış:** yayayken fare yukarı/aşağı bakış eğimini değiştirir (`lookPitch`); gökyüzündeki hava saldırısı görülebilir.
+- **Çekirdeğe ulaşma:** etkileşim mesafesi anıtın gerçek ayak izinin kenarından ölçülür (`coreReach`); büyük anıtlarda da yükseltme/taret/ekip çalışır.
+- **Y gemideyken:** komuta paneli artık kapanmıyor ve oyun durmuyor; seyahat ederken düzenlenebilir.
+- **Kara delik:** açan amiral gemisi de olay ufkuna girerse parçalanır.
+- **Son bölüm:** Sessiz Avlu'ya ilk varışta kavşak tanıtımı (kara delik + ona bağlanan bütün eşikler, zaman bükülmesi). Son adım için kara deliğe gerçekten yaklaşmak gerekir (7 rs). "Solucan deliğinden geç" adımı eşiklerin Avlu'ya bağlandığını anlatır.
+- **Gemi savaşı:** oyuncu mermileri çok daha hızlı (roket 150, plazma 200, saçma 230, lazer 340), hasar ×1,45, atış hızları arttı, nişan yardımı konisi genişledi.
+- **İlk karşılaşma kataloğu:** ırk kartının altında ırkın karakteri ve gemisi dönen 3B önizlemede (`racePreview`). Irkı belli filolar savaşta kendi ırk gemileriyle gelir (`raceShipVisual`).
+- **Çekirdek turu** (`coreTour`, `startCine`): "Üssünü güçlendir" brifinginden sonra kamera çekirdeğin çevresinde döner, altyazılar çekirdeği, yapıları, işçileri, diğer ırkların çekirdeklerini ve Y panelini anlatır (Enter/dokunuş geçer).
+- **Eğitim temposu:** adımlar arası brifing gecikmesi 3,2 sn; "Komuta panelini tanı (Y)" adımı paneli bölüm bölüm anlatır; panelde duruşları ve simgeleri açıklayan yardım satırı.
+- **Karşılaşmada haraç:** "Haraç öde" her zaman tıklanır; enerji yetmezse maden (4) ve kristal (9) ile tamamlanır, hiç yetmiyorsa ne kadar gerektiği söylenir. "Haraç iste" zayıfken de denenebilir (riskli; düşük şans).
+- **Performans:** oyun içi panellerde `backdrop-filter` bulanıklığı kaldırıldı (zayıf GPU'da hikâye kartı açıkken kareler çok yavaşlıyordu).
