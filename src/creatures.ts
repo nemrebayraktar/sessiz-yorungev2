@@ -57,6 +57,7 @@ function cached(key: string, make: () => BufferGeometry) {
   let g = geoCache.get(key)
   if (!g) {
     g = make()
+    g.userData.keep = true
     geoCache.set(key, g)
   }
   return g

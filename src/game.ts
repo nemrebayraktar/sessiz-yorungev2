@@ -318,6 +318,7 @@ type Gate = {
   brought: boolean
 }
 
+type CineShot = { a0: number; a1: number; d0: number; d1: number; h0: number; h1: number; f0: number; f1: number; side?: number }
 type Bookmark = { pos: Vector3; vel: Vector3; quat: Quaternion }
 
 type Hole = {
@@ -366,6 +367,7 @@ const vJ2 = new Vector3()
 const vO1 = new Vector3()
 const vO2 = new Vector3()
 const vO3 = new Vector3()
+const vO4 = new Vector3()
 const vFa = new Vector3()
 const vFb = new Vector3()
 const bX = new Vector3()
@@ -2604,7 +2606,7 @@ class Game {
   }
 
   /* ---------- Tanıtım çekimi: kamera bir yeri (çekirdek) dolaşır, altyazılar anlatır ---------- */
-  cine: { t: number; caps: string[]; each: number; at: Vector3; up: Vector3; radius: number; height: number } | null = null
+  cine: { t: number; caps: string[]; each: number; at: Vector3; up: Vector3; radius: number; height: number; shots?: CineShot[]; look?: Vector3; fresh?: boolean } | null = null
   tourDone = false
   tourPending = false
 
@@ -2639,10 +2641,37 @@ class Game {
       return
     }
     if (idx !== idx0) this.domSet('cine-cap', c.caps[idx])
-    // Kamera: yerden yükselen yavaş bir yörünge.
     vO1.set(1, 0, 0)
     if (Math.abs(vO1.dot(c.up)) > 0.9) vO1.set(0, 0, 1)
     vO1.addScaledVector(c.up, -vO1.dot(c.up)).normalize()
+    const shot = c.shots?.[Math.min(idx, c.shots.length - 1)]
+    if (shot) {
+      // Çekim listesi: her altyazının kendi kamera hareketi (vinç yukarı/aşağı, yaklaşma, yan kayma).
+      // Hareket yumuşak başlar ve yavaşlayarak biter; çekimler arası geçiş kamerayı kaydırarak bağlanır.
+      const local = clamp((c.t - idx * c.each) / c.each, 0, 1)
+      const e = local * local * (3 - 2 * local)
+      const R = c.radius
+      const ang = shot.a0 + (shot.a1 - shot.a0) * e
+      const dist = (shot.d0 + (shot.d1 - shot.d0) * e) * R
+      const h = (shot.h0 + (shot.h1 - shot.h0) * e) * R
+      const fh = (shot.f0 + (shot.f1 - shot.f0) * e) * R
+      vO1.applyAxisAngle(c.up, ang)
+      vO3.copy(c.at).addScaledVector(vO1, dist).addScaledVector(c.up, h)
+      if (shot.side) {
+        vO2.crossVectors(c.up, vO1).normalize()
+        vO3.addScaledVector(vO2, (e - 0.5) * shot.side * R)
+      }
+      vO2.copy(c.at).addScaledVector(c.up, fh)
+      const k = c.fresh === false ? 1 - Math.exp(-3.2 * dt) : 1
+      c.fresh = false
+      this.camera.position.lerp(vO3, k)
+      if (!c.look) c.look = vO2.clone()
+      c.look.lerp(vO2, k)
+      this.camera.up.copy(c.up)
+      this.camera.lookAt(c.look)
+      return
+    }
+    // Varsayılan: yerden yükselen yavaş bir yörünge.
     vO1.applyAxisAngle(c.up, c.t * 0.22)
     this.camera.position.copy(c.at).addScaledVector(vO1, c.radius).addScaledVector(c.up, c.height + Math.sin(c.t * 0.3) * 1.5)
     this.camera.up.copy(c.up)
@@ -2666,6 +2695,24 @@ class Game {
       'Diğer ırkların da tıpkı bunun gibi çekirdekleri var. Bir üssü almak için savunmacılarını ve taretlerini düşürürsün; çekirdek düşerse üs düşer.',
       'Y komuta paneli: bütün kolonilerin, işçilerin, askerlerin ve taretlerin. Seyahat ederken de açılır.',
     ], Math.max(18, this.coreReach(c) * 2.2), 9)
+    // Birimler çekim yarıçapı (R) cinsinden: açı, uzaklık, yükseklik, bakış yüksekliği; başlangıç → bitiş.
+    if (this.cine) {
+      this.cine.fresh = true
+      this.cine.shots = [
+        // 1) Çekirdek: dibinden yukarı bakarak başlar, vinçle yükselip bütününü gösterir.
+        { a0: 0.2, a1: 0.5, d0: 0.35, d1: 0.75, h0: 0.04, h1: 0.45, f0: 0.35, f1: 0.12 },
+        // 2) Kısayollar: göz hizasında yandan yavaşça yaklaşır.
+        { a0: 1.3, a1: 1.15, d0: 0.9, d1: 0.55, h0: 0.14, h1: 0.12, f0: 0.08, f1: 0.08, side: 0.5 },
+        // 3) Evler: tepeden aşağı bakan geniş plan, yavaşça alçalır.
+        { a0: 2.4, a1: 2.9, d0: 0.25, d1: 0.5, h0: 1.7, h1: 1.05, f0: 0, f1: 0 },
+        // 4) İşçiler: yere yakın, yanlamasına kayan takip çekimi.
+        { a0: 3.6, a1: 4.4, d0: 1.15, d1: 1.15, h0: 0.08, h1: 0.1, f0: 0.05, f1: 0.05 },
+        // 5) Diğer ırklar: geri çekilip yukarı yükselir; üs gezegenin üstünde küçülür.
+        { a0: 4.6, a1: 5.0, d0: 0.9, d1: 1.8, h0: 0.5, h1: 2.4, f0: 0.1, f1: 0 },
+        // 6) Komuta paneli: yeniden göz hizasına iner, çekirdeğe döner.
+        { a0: 5.4, a1: 6.1, d0: 1.0, d1: 0.7, h0: 0.6, h1: 0.2, f0: 0.1, f1: 0.14 },
+      ]
+    }
     return true
   }
 
@@ -3020,12 +3067,26 @@ class Game {
     return this.surfacePos(this.worldDir(best.dir, planet, vQ), planet, 1.5, out)
   }
 
+  private wpUp = new Vector3()
+  private wpSpot = new Vector3()
   private waypoint(): Vector3 | null {
     if (!this.route) return null
     if (this.route.system === this.universeId) {
       if (this.route.kind === 'planet') {
         const planet = this.planets.find((p) => p.def.id === this.route?.id)
-        return planet ? planet.pos : null
+        if (!planet) return null
+        // Rota gezegenin ortasına değil, tam gidilecek yere: üs varsa çekirdeğin üstüne (inince üssün yanındasın),
+        // yoksa gezegenin sana bakan yüzünün hemen üstüne.
+        const c = this.colonies[planet.def.id]
+        if (c && planet.def.landable !== false) {
+          this.worldDir(c.dir, planet, this.wpUp)
+          return this.wpSpot.copy(planet.pos).addScaledVector(this.wpUp, planet.def.radius + 16)
+        }
+        if (planet.def.heat) return planet.pos
+        this.wpUp.subVectors(this.pos, planet.pos)
+        if (this.wpUp.lengthSq() < 1e-4) this.wpUp.set(0, 1, 0)
+        this.wpUp.normalize()
+        return this.wpSpot.copy(planet.pos).addScaledVector(this.wpUp, planet.def.radius + 20)
       }
       if (this.route.kind === 'hole') {
         const hole = this.holes.find((h) => h.kind === 'hole')
@@ -3563,6 +3624,13 @@ class Game {
     else if (dist > far) vD.copy(vB).addScaledVector(vC, e.strafe * 0.7)
     else if (dist < near) vD.copy(vB).multiplyScalar(-1).addScaledVector(vC, e.strafe)
     else vD.copy(vC).multiplyScalar(e.strafe).addScaledVector(vB, (dist - mid) * 0.035)
+    // Açık kara delikten kaçınır (açan da dahil): yakındaysa dümen dışarı kırılır; yine de içine düşen parçalanır.
+    for (const well of this.enemyWells) {
+      if (!well.alive) continue
+      vO4.subVectors(e.pos, well.pos)
+      const wd = vO4.length()
+      if (wd < 30 && wd > 0.01) vD.addScaledVector(vO4.normalize(), ((30 - wd) / 30) * 3.2)
+    }
     if (vD.lengthSq() < 1e-6) vD.copy(vB)
     vD.normalize()
     const uniMul = UNIVERSES[this.universeId].enemyMul
@@ -3662,7 +3730,7 @@ class Game {
     this.audio.laser(true)
   }
 
-  private openEnemyWell(e: Enemy) {
+  openEnemyWell(e: Enemy) {
     const slot = this.enemyWells.find((well) => !well.alive)
     if (!slot) return
     vA.subVectors(this.pos, e.pos)
@@ -5755,6 +5823,12 @@ class Game {
     const gone = new Set<object>()
     root.traverse((obj) => {
       const mesh = obj as Mesh
+      // Geometri de bırakılır (sistem değiştikçe GPU belleği şişmesin); paylaşılan önbellek geometrileri kalır.
+      const geo = mesh.geometry as { dispose?: () => void; userData?: { keep?: boolean } } | undefined
+      if (geo?.dispose && !geo.userData?.keep && !gone.has(geo)) {
+        gone.add(geo)
+        geo.dispose()
+      }
       const mat = mesh.material as { dispose?: () => void } | { dispose?: () => void }[] | undefined
       if (!mat) return
       const list = Array.isArray(mat) ? mat : [mat]
@@ -7009,9 +7083,11 @@ class Game {
         if (!enemy.alive) continue
         vA.subVectors(well.pos, enemy.pos)
         const dist = Math.max(0.4, vA.length())
-        // Açan gemi de dahil: olay ufkuna giren herkes parçalanır (açan daha zayıf çekilir, kaçmaya çalışır).
-        enemy.vel.addScaledVector(vA, ((enemy === well.owner ? 25 : 60) / dist) * dt)
-        if (dist < WELL_EH) {
+        // Açan gemi de dahil: herkes aynı güçle çekilir; olay ufkuna giren parçalanır.
+        enemy.vel.addScaledVector(vA, Math.min(220, Math.max(60 / dist, 3000 / (dist * dist))) * dt)
+        // Geminin gövdesi olay ufkuna değdiği an (yalnız merkezi değil) parçalanır.
+        const bodyR = enemy.giant ? 2.6 * enemy.scale : 2.2
+        if (dist < WELL_EH + bodyR * 0.6) {
           this.fx.explosion(enemy.pos, 0xffe2b0, enemy.giant ? 2.4 : 1.4)
           this.hurtEnemy(enemy, enemy.hull + enemy.shield + 1)
           if (enemy === well.owner) this.toast('Amiral gemisi kendi kara deliğine düştü!')
@@ -8063,12 +8139,21 @@ class Game {
     const wish = Math.min(1, Math.hypot(axes.f, axes.s))
     // Sürükleme / fare: yürürken bakış yönünü çevirir; dururken kamerayı karakterin çevresinde döndürür.
     const look = -this.input.mouseX * 0.0022 * this.save.settings.sens
-    const lookUp = this.input.mouseY * 0.0022 * this.save.settings.sens * (this.save.settings.invert ? -1 : 1)
+    // Dikey bakış daha az hassas (yatayın yarısı); küçük titremeler ölü bölgede yutulur.
+    const rawUp = this.input.mouseY * 0.0011 * this.save.settings.sens * (this.save.settings.invert ? -1 : 1)
+    const lookUp = Math.abs(this.input.mouseY) < 1.5 ? 0 : rawUp
     const orbiting = wish <= 0.08 && (this.touchy() || this.orbitKey())
     if (!orbiting) {
       if (look) this.footView.applyAxisAngle(vA, look)
       // Yukarı/aşağı bakış: gökyüzündeki saldırıyı görebilmek için kamera yukarı dönebilir.
-      if (lookUp) this.lookPitch = clamp(this.lookPitch - lookUp, -0.6, 1.25)
+      if (lookUp) {
+        this.lookPitchT = clamp(this.lookPitchT - lookUp, FOOT_PITCH0 - 0.35, FOOT_PITCH0 + 1.05)
+        this.pitchIdle = 0
+      } else this.pitchIdle += dt
+      // Yürürken bir süre dikey hareket yoksa bakış yavaşça ufka döner (oynanışı bozmaz).
+      if (wish > 0.08 && this.pitchIdle > 1.6) this.lookPitchT += (FOOT_PITCH0 - this.lookPitchT) * (1 - Math.exp(-1.2 * dt))
+      // Gerçek eğim hedefe yumuşakça yaklaşır: kayma ve sarsıntı olmaz.
+      this.lookPitch += (this.lookPitchT - this.lookPitch) * (1 - Math.exp(-7 * dt))
       // Yürümeye başlayınca yörünge kamerası yumuşakça arkaya döner.
       this.orbitYaw *= Math.exp(-5 * dt)
       this.orbitPitch *= Math.exp(-5 * dt)
@@ -8158,6 +8243,8 @@ class Game {
   }
 
   lookPitch = FOOT_PITCH0
+  lookPitchT = FOOT_PITCH0
+  pitchIdle = 0
   private footCamera(dt: number) {
     vA.copy(this.pos).sub(this.footPlanet ? this.footPlanet.pos : this.pos).normalize()
     vB.copy(this.footView)
@@ -8165,8 +8252,9 @@ class Game {
     // Dikey telefonda karakter ekranı kaplamasın: kamera biraz daha geride ve yukarıda.
     const narrow = this.camera.aspect < 1
     const up = Math.max(0, this.lookPitch - FOOT_PITCH0)
-    const back = (narrow ? 7.8 : 5.4) * (1 - this.orbitPitch * 0.25) * (1 - up * 0.25)
-    const lift = Math.max(0.9, (narrow ? 3.1 : 2.4) + this.orbitPitch * 3.2 - up * 1.3)
+    // Yukarı bakarken kamera hafifçe alçalır ve yaklaşır (az): görüntü kaymaz, yalnız bakış döner.
+    const back = (narrow ? 7.8 : 5.4) * (1 - this.orbitPitch * 0.25) * (1 - up * 0.1)
+    const lift = Math.max(0.9, (narrow ? 3.1 : 2.4) + this.orbitPitch * 3.2 - up * 0.5)
     vC.copy(this.pos).addScaledVector(vA, lift).addScaledVector(vB, -back)
     const k = this.snapCamera ? 1 : 1 - Math.exp(-8 * dt)
     this.camera.position.lerp(vC, k)
@@ -12616,6 +12704,10 @@ class Game {
         return game.routeLine.visible
       },
       routeOn: () => game.routeLine.visible,
+      waypointNow: () => {
+        const w = game.waypoint()
+        return w ? { x: w.x, y: w.y, z: w.z } : null
+      },
       punchPose: () => {
         game.punchT = 0.18
         game.poseWalker()
@@ -12642,6 +12734,29 @@ class Game {
       confirm: () => game.startRun(),
       cast: (slot: 1 | 2) => game.tryAbility(slot),
       jump: (id: UniId) => game.transit(id),
+      ownerWell: () => {
+        const e = game.enemies.find((x) => x.alive && x.attack === 'well') ?? game.enemies.find((x) => x.alive)
+        if (!e) return null
+        game.openEnemyWell(e)
+        const well = game.enemyWells.find((w) => w.owner === e)
+        return { found: Boolean(well), dist: well ? well.pos.distanceTo(e.pos) : -1, giant: e.giant }
+      },
+      ownerNear: (gap: number) => {
+        const well = game.enemyWells.find((w) => w.alive && w.owner?.alive)
+        if (!well || !well.owner) return null
+        well.owner.pos.copy(well.pos).add(new Vector3(gap, 0, 0))
+        well.owner.vel.set(0, 0, 0)
+        return true
+      },
+      stepCombat: (n: number, dt = 1 / 60) => {
+        for (let i = 0; i < n && game.mode === 'combat'; i++) {
+          game.clockT += dt
+          game.updateCombat(dt)
+        }
+        return game.mode
+      },
+      wellDbg: () => game.enemyWells.map((w) => ({ alive: w.alive, life: w.life, owner: w.owner ? { alive: w.owner.alive, d: w.owner.pos.distanceTo(w.pos), hull: w.owner.hull, attack: w.owner.attack } : null })).concat([{ mode: game.mode, hold: game.holdPose, wells: game.enemies.filter((e) => e.alive && e.attack === 'well').length } as never]),
+      ownerAlive: () => game.enemies.some((x) => x.alive && x.attack === 'well'),
       dropEnemyWell: () => {
         const enemy = game.enemies.find((item) => item.alive)
         if (!enemy) return false
@@ -12884,6 +12999,7 @@ class Game {
       },
       setPitch: (p: number) => {
         game.lookPitch = p
+        game.lookPitchT = p
       },
       flashTest: () => {
         const w = game.walker
