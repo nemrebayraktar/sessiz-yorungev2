@@ -51,7 +51,8 @@ await page.evaluate(() => window.__sessiz.tutorial(false, false))
 await page.waitForTimeout(600)
 if ((await disp('#touch')) === 'none') errors.push('touch HUD hidden while playing')
 
-// 5) Görev zinciri: Ay'a uç → in → yürü.
+// 5) Görev zinciri (v17: evde başlar; Bölüm 2): Ay'a uç → in → yerlileri temizle.
+await S(() => window.__sessiz.questGo('fly'))
 let q = await S(() => window.__sessiz.questInfo())
 console.log('quest', q)
 if (q.id !== 'fly' || !q.title.includes("Ay'a")) errors.push(`first quest ${JSON.stringify(q)}`)
@@ -62,7 +63,7 @@ await page.waitForFunction(() => window.__sessiz.questInfo().id === 'land', null
 const landedAy = await S(() => window.__sessiz.landOnId('ay'))
 const loreNow = await S(() => window.__sessiz.loreOn())
 console.log('landed ay', landedAy, await S(() => [window.__sessiz.snap().layer, window.__sessiz.questInfo()]))
-await page.waitForFunction(() => window.__sessiz.questInfo().id === 'walk', null, { timeout: 20000 }).catch(() => errors.push('land quest did not complete'))
+await page.waitForFunction(() => window.__sessiz.questInfo().id === 'clear', null, { timeout: 20000 }).catch(() => errors.push('land quest did not complete'))
 if (!(await S(() => window.__sessiz.discovered().includes('ay')))) errors.push('Ay not in discoveries')
 if (!loreNow) errors.push('lore card not shown on landing')
 
@@ -83,6 +84,7 @@ const dxA = await dir(-1)
 console.log('foot dx', dxD.toFixed(3), dxA.toFixed(3))
 if (!(dxD > 0.005)) errors.push(`D did not move right (${dxD})`)
 if (!(dxA < -0.005)) errors.push(`A did not move left (${dxA})`)
+await S(() => window.__sessiz.questGo('walk'))
 const walked = await S(() => window.__sessiz.walkQuest(600))
 console.log('walk', walked)
 if (walked.id !== 'mine') errors.push(`walk quest did not complete ${JSON.stringify(walked)}`)

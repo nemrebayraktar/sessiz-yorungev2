@@ -266,6 +266,28 @@ export class Fx {
     }, [m], [])
   }
 
+  /** Gemi patlaması: çift ışık, genişleyen ateş topu, şok halkası, yanan parçalar, duman ve gecikmeli ikincil patlamalar. */
+  shipBlast(at: Vector3, size: number, color = 0xff7a3a) {
+    this.flash(at, 0xffffff, size * 4.5, 0.18)
+    this.flash(at, 0xffb060, size * 6, 0.45)
+    this.puff(at, 0xffa040, 8, size * 1.6, 0.7, undefined, true)
+    this.puff(at, color, 6, size * 2.2, 1.0, undefined, true)
+    this.wave(at, 0xffc070, size * 5, 0.5)
+    this.puff(at, 0x2a2622, 9, size * 1.8, 2.2)
+    this.debris(at, new Vector3(0, 1, 0), 0xff8a3a, Math.round(6 + size * 3), size * 9, 1.6, 'metal', true)
+    this.debris(at, new Vector3(0, -1, 0), 0x3a3634, Math.round(4 + size * 2), size * 7, 1.4, 'metal')
+    // İkincil patlamalar: biraz sonra çevrede küçük ateş topları.
+    const n = Math.round(2 + size)
+    for (let i = 0; i < n; i++) {
+      const off = new Vector3((Math.random() - 0.5) * size * 3, (Math.random() - 0.5) * size * 3, (Math.random() - 0.5) * size * 3)
+      const p = at.clone().add(off)
+      window.setTimeout(() => {
+        this.flash(p, 0xffc080, size * 2.4, 0.22)
+        this.puff(p, 0xff8a3a, 4, size * 0.9, 0.6, undefined, true)
+      }, 120 + i * 140 + Math.random() * 120)
+    }
+  }
+
   /** Büyük patlama: ışık + ateş + duman + parçalar. */
   explosion(at: Vector3, color: number, size: number, up = new Vector3(0, 1, 0)) {
     this.flash(at, 0xfff0d0, size * 3, 0.22)

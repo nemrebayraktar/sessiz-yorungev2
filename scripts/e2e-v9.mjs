@@ -4,7 +4,7 @@ import { chromium } from 'playwright'
 const errors = []
 const browser = await chromium.launch({
   headless: true,
-  args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-webgl', '--ignore-gpu-blocklist', '--disable-background-timer-throttling'],
+  args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-webgl', '--ignore-gpu-blocklist', '--disable-background-timer-throttling', '--js-flags=--expose-gc'],
 })
 const page = await browser.newPage({ viewport: { width: 960, height: 600 } })
 page.on('pageerror', (err) => errors.push(`pageerror: ${err.message}`))
@@ -18,10 +18,13 @@ await page.evaluate(() => {
 await page.waitForFunction(() => window.__sessiz.mode === 'map' && !window.__sessiz.snap().fading)
 await page.evaluate(() => window.__sessiz.tutorial(false, false))
 
+// Yazılımsal GL'de kareler saniyeler sürüyor: hesap ağırlıklı bölümlerde çizim kapalı.
+await page.evaluate(() => window.__sessiz.skipRender(true))
 // 1) Hiçbir evrende iki gezegen yörüngede birbirine girmez (28 saatlik dönüş).
 for (const uni of ['gunes', 'avlu', 'kizil', 'soluk', 'proxima']) {
   await page.evaluate((u) => window.__sessiz.jump(u), uni)
   await page.waitForFunction((u) => window.__sessiz.snap().universe === u && !window.__sessiz.snap().fading, uni)
+  await page.evaluate(() => window.gc?.())
   // Döngü parçalara bölünür: sayfa uzun süre kilitlenmesin (yazılımsal GL'de bellek şişiyor).
   let min = Infinity
   for (let chunk = 0; chunk < 20; chunk++) {

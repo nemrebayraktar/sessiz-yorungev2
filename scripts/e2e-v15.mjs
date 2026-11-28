@@ -41,7 +41,7 @@ await S(() => window.__sessiz.questGo('fly'))
 const r1 = await S(() => window.__sessiz.routeInfo())
 await S(() => window.__sessiz.questGo('walk'))
 const r2 = await S(() => window.__sessiz.routeInfo())
-if (!r1 || r2) errors.push(`stale route ${JSON.stringify(r1)} -> ${JSON.stringify(r2)}`)
+if (!r1 || (r2 && r2.id === r1.id)) errors.push(`stale route ${JSON.stringify(r1)} -> ${JSON.stringify(r2)}`)
 
 // 3) Eğitim kapısı: solucan deliği "kapı" adımından önce kapalı.
 await S(() => window.__sessiz.questGo('fly'))

@@ -19,7 +19,12 @@ const ORIGIN_LOOKS: Record<OriginId, Look> = {
   kepler452: { id: 'kepler452', name: 'Altın', form: 'regal', style: 'float', body: 0xe0b15a, skin: 0xfff0c0 },
 }
 
-const ICE_LOOK: Look = { id: 'ice', name: 'Buz', form: 'yeti', style: 'hop', body: 0xeef6ff }
+
+/** Garibanlar: her sistemde boş gezegenleri koruyan tek tip yerli tür (uzay çöpçüleri). */
+export const GARIBAN_LOOK: Look = { id: 'gariban', name: 'Gariban', form: 'gariban', style: 'waddle', body: 0x7a8a6a, skin: 0xb8e0a0 }
+
+/** Tombişler: Altınların kuzenleri. Soluk Derin'in iki gezegeninde yaşarlar; oynanmaz, yerli olarak savunur. */
+export const CHERUB_LOOK: Look = { id: 'cherub', name: 'Tombiş', form: 'cherub', style: 'float', body: 0xf2c860, skin: 0xffd9c2 }
 
 /** Türlerin yerdeki farkı: hız, zıplama, yumruk gücü ve erimi. Kepler-186f yerde kendini onarır. */
 export type FootTrait = { speed: number; jump: number; punch: number; reach: number; regen: number; blurb: string }
@@ -66,7 +71,9 @@ function mix(a: number, b: number, t: number) {
 
 /** Gezegenin yerlilerinin türü: köyü varsa köyün türü, yoksa gezegenin rengine göre yabani tür. */
 export function nativeLook(def: PlanetDef): Look {
-  if (def.village === 'ice') return ICE_LOOK
+  // Irk köyü olmayan bütün gezegenlerin yerlisi Garibanlardır.
+  if (!def.village || def.village === 'ice') return GARIBAN_LOOK
+  if (def.village === 'cherub') return CHERUB_LOOK
   const origin = def.village ? VILLAGE_ORIGIN[def.village] : undefined
   if (origin) return ORIGIN_LOOKS[origin]
   const variant = def.kind

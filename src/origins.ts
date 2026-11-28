@@ -286,7 +286,7 @@ export function homeSystem(id: OriginId): UniId {
 }
 
 export type PlanetKind = 'small' | 'large' | 'mid'
-export type Village = 'human' | 'purple' | 'plant' | 'ocean' | 'red' | 'gold' | 'shadow' | 'ice' | 'mars'
+export type Village = 'human' | 'purple' | 'plant' | 'ocean' | 'red' | 'gold' | 'shadow' | 'ice' | 'mars' | 'cherub'
 
 export type PlanetDef = {
   id: string
@@ -389,8 +389,19 @@ function tilted(id: string, theme: number, homeName: string, homeColor: number, 
   return (holes) => generateSystem({ id, theme, holes, home: { name: homeName, color: homeColor, village } })
 }
 
-function courtyard(id: string, theme: number): PlanetSource {
-  return (holes) => generateSystem({ id, theme, holes })
+function courtyard(id: string, theme: number, cousins = false): PlanetSource {
+  return (holes) => {
+    const out = generateSystem({ id, theme, holes })
+    if (cousins) {
+      // Tombişler (Altınların kuzenleri) bu sistemin en büyük iki karasal gezegeninde yaşar.
+      const homes = out.filter((p) => p.landable !== false && !p.heat && p.kind !== 'small').sort((a, b) => b.radius - a.radius).slice(0, 2)
+      for (const h of homes) {
+        h.village = 'cherub'
+        h.lore = `${h.name}. Tombişlerin yurdu: Altınların tombul, bebek yüzlü kuzenleri. Süzülerek dolaşır, gülerek savaşırlar; yurtlarını kimseye bırakmazlar.`
+      }
+    }
+    return out
+  }
 }
 
 const tone = (
@@ -542,7 +553,7 @@ export const UNIVERSES: Record<UniId, UniverseDef> = {
       { kind: 'worm', x: 70, y: -210, z: 30, rs: 0, gm: 0, curve: 1, to: 'gliese' },
       { kind: 'worm', x: -227, y: -150, z: -106, rs: 0, gm: 0, curve: 1, to: 'kepler452' },
     ],
-    courtyard('soluk', 0x9eb6f2),
+    courtyard('soluk', 0x9eb6f2, true),
   ),
   marskol: tone(
     'marskol', // iç kimlik eskisi gibi; oyuncu "Ross 128" görür

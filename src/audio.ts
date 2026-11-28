@@ -354,7 +354,7 @@ export class AudioBus {
     }
     if (kind !== 'die' && this.voiceBudget <= 0) return
     this.voiceBudget--
-    const tm = RACE_TIMBRE[race] ?? RACE_TIMBRE[race.startsWith('wild') ? 'wild' : 'earth']
+    const tm = RACE_TIMBRE[race] ?? RACE_TIMBRE[race.startsWith('wild') || race === 'gariban' ? 'wild' : race === 'cherub' ? 'kepler452' : 'earth']
     const v = tm.voice
     const k = kind === 'die' ? 1.4 : kind === 'hurt' ? 1 : 0.8
     const pitch = v.pitch * (kind === 'hurt' ? 1.25 : kind === 'die' ? 0.8 : 1) * (0.92 + Math.random() * 0.16)
@@ -493,6 +493,35 @@ export class AudioBus {
   }
 
   /** Oyuncu gemisinin ateşi: ırkın tınısıyla. */
+  /** Silaha özel atış sesi: ırkın tınısının üstüne silahın karakteri (gürleme, tıslama, kalkış). */
+  weaponShot(kind: 'laser' | 'spread' | 'rocket' | 'plasma' | 'chain') {
+    if (!this.ctx || this.volume <= 0.001) return
+    if (kind === 'laser') {
+      // Taramalı: kısa, sert "tak" + parlak çıt.
+      this.sweep(2100 + Math.random() * 200, 420, 0.06, 'square', 0.022)
+      this.noiseHit(5200, 1.4, 0.03, 0.03, 'highpass')
+      this.sweep(160, 70, 0.07, 'sine', 0.04)
+    } else if (kind === 'spread') {
+      // Saçma: kalın patlama + metalik çınlama.
+      this.noiseHit(1800, 0.8, 0.14, 0.09, 'lowpass')
+      this.sweep(220, 50, 0.18, 'sine', 0.1)
+      this.noiseHit(6000, 2, 0.05, 0.03, 'highpass')
+    } else if (kind === 'rocket') {
+      // Roket: ateşleme "tuf" + yükselen tıslama (uzaklaşan füze).
+      this.sweep(90, 45, 0.25, 'sine', 0.1)
+      this.noiseHit(900, 0.7, 0.5, 0.05, 'bandpass')
+      this.sweep(380, 1400, 0.45, 'sawtooth', 0.018, 0.04)
+    } else if (kind === 'plasma') {
+      // Plazma: dolup boşalan uğultu.
+      this.sweep(140, 520, 0.12, 'triangle', 0.05)
+      this.sweep(520, 90, 0.28, 'sawtooth', 0.04, 0.1, 18)
+    } else {
+      // Şimşek: çatırtı.
+      this.noiseHit(4200, 3, 0.12, 0.06, 'bandpass')
+      this.sweep(2600, 900, 0.1, 'square', 0.02, 0, 60)
+    }
+  }
+
   shipShot() {
     const w = (RACE_TIMBRE[this.race] ?? RACE_TIMBRE.earth).shot
     this.sweep(w.from * (0.95 + Math.random() * 0.1), w.to, w.dur, w.type, w.gain)

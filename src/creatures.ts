@@ -13,6 +13,8 @@ import {
   MeshStandardMaterial,
   type Object3D,
   OctahedronGeometry,
+  Shape,
+  ShapeGeometry,
   SphereGeometry,
   TorusGeometry,
   Box3,
@@ -38,6 +40,8 @@ export type CreatureForm =
   | 'regal'
   | 'yeti'
   | 'wild'
+  | 'gariban'
+  | 'cherub'
 
 export type CreatureLook = {
   id: string
@@ -577,11 +581,35 @@ function regal(look: CreatureLook): Parts {
   face.scale.set(0.86, 1.18, 0.92)
   const jaw = part(sph(0.12, 12, 10), ivory, 0, -0.14, 0.04)
   jaw.scale.set(0.9, 0.75, 0.9)
-  const eyeM = shine(0xffc23a, 2.2)
-  const eL = part(box(0.075, 0.018, 0.02), eyeM, -0.075, 0.02, 0.17)
-  const eR = part(box(0.075, 0.018, 0.02), eyeM, 0.075, 0.02, 0.17)
-  eL.rotation.z = -0.22
-  eR.rotation.z = 0.22
+  // Gözler: koyu badem göz yuvasında parlayan beş köşeli altın yıldız.
+  const eyeM = shine(0xffc23a, 2.4)
+  eyeM.side = DoubleSide
+  const socketM = mat(0x2a1a10, { rough: 0.4 })
+  const starGeo = cached('regalStar', () => {
+    const sh = new Shape()
+    for (let i = 0; i < 10; i++) {
+      const a = Math.PI / 2 + (i / 10) * Math.PI * 2
+      const r = i % 2 === 0 ? 0.05 : 0.021
+      const x = Math.cos(a) * r
+      const y = Math.sin(a) * r
+      if (i === 0) sh.moveTo(x, y)
+      else sh.lineTo(x, y)
+    }
+    sh.closePath()
+    return new ShapeGeometry(sh)
+  })
+  const eL = new Group()
+  const eR = new Group()
+  for (const [g, x, tilt] of [[eL, -0.078, -0.12], [eR, 0.078, 0.12]] as const) {
+    g.position.set(x, 0.025, 0.162)
+    g.rotation.set(-0.05, x * 2.2, tilt)
+    const sock = part(sph(0.048, 12, 8), socketM)
+    sock.scale.set(1.25, 0.95, 0.35)
+    const star = new Mesh(starGeo, eyeM)
+    star.position.z = 0.018
+    const glint = part(sph(0.009, 6, 4), shine(0xffffff, 2), 0.016, 0.016, 0.022)
+    g.add(sock, star, glint)
+  }
   const nose = part(box(0.018, 0.07, 0.03), ivory, 0, -0.03, 0.185)
   const circlet = part(tor(0.17, 0.022), gold, 0, 0.1, 0)
   circlet.rotation.x = Math.PI / 2 - 0.12
@@ -596,8 +624,30 @@ function regal(look: CreatureLook): Parts {
   // Altın başlık: başın üstünü örten kask ve arkaya uzanan zarif tepelik.
   const helm = part(cached('regalHelm', () => new SphereGeometry(0.185, 18, 10, 0, Math.PI * 2, 0, Math.PI * 0.42)), gold, 0, 0.035, -0.005)
   helm.scale.set(0.95, 1.2, 1)
-  const hood = part(cone(0.09, 0.42, 10), gold, 0, 0.17, -0.2)
-  hood.rotation.x = -1.9
+  // Saç: başlığın altından sırta dökülen ince, uzun, sarı tutamlar; yürürken hafifçe salınır.
+  const hairM = mat(0xf6dc7a, { rough: 0.45, metal: 0.25, glow: 0.22 })
+  const hood = new Group()
+  hood.name = 'hair'
+  const STRANDS = 21
+  for (let i = 0; i < STRANDS; i++) {
+    const t = i / (STRANDS - 1)
+    const a = -1.95 + t * 3.9
+    const len = 0.62 + Math.sin(t * Math.PI) * 0.26 + ((i * 7) % 3) * 0.04
+    const strand = new Group()
+    strand.position.set(Math.sin(a) * 0.17, 0.06, -Math.cos(a) * 0.16 - 0.03)
+    strand.rotation.set(0.34 + Math.cos(a) * 0.1, 0, Math.sin(a) * 0.16)
+    const s = part(cyl(0.015, 0.005, len, 4), hairM, 0, -len / 2, 0)
+    strand.add(s)
+    hood.add(strand)
+  }
+  // Alnın iki yanından öne düşen iki ince perçem.
+  for (const side of [-1, 1]) {
+    const lock = new Group()
+    lock.position.set(side * 0.155, 0.06, 0.06)
+    lock.rotation.z = side * 0.06
+    lock.add(part(cyl(0.011, 0.004, 0.46, 4), hairM, 0, -0.23, 0))
+    hood.add(lock)
+  }
   const halo = part(tor(0.3, 0.018), shine(0xffe7a0, 1.8), 0, 0.12, -0.26)
   halo.name = 'halo'
   const rays: Mesh[] = []
@@ -645,6 +695,7 @@ function regal(look: CreatureLook): Parts {
   const clasp = part(sph(0.05, 10, 8), gemM, 0, 1.45, 0.02)
   p.hips.add(skirt, ...tassets, belt, buckle, torso, plate, ...lines, heart, gorget, neck, ...pauldrons, capeRoot, clasp)
   p.hips.userData.cape = segs
+  p.hips.userData.hair = hood.children
   p.wiggle.push(halo)
   return p
 }
@@ -870,6 +921,113 @@ function connectParts(p: Parts) {
   }
 }
 
+/* ---------------- Garibanlar: her sistemin boş gezegenlerini koruyan minik uzay çöpçüleri ----------------
+   Yumru gövde, kocaman iki göz, tepede ışıklı anten, sırtta hurda çantası, yamalı tulum. Tek tip ve basit. */
+function gariban(look: CreatureLook): Parts {
+  const p = frame()
+  const suit = mat(look.body ?? 0x7a8a6a, { rough: 0.75, glow: 0.12 })
+  const patch = mat(0xb8743a, { rough: 0.8 })
+  const skin = mat(look.skin ?? 0xb8e0a0, { rough: 0.5, glow: 0.2 })
+  const metal = mat(0x8a8e96, { metal: 0.6, rough: 0.45 })
+  p.legL.position.set(-0.13, 0.32, 0)
+  p.legR.position.set(0.13, 0.32, 0)
+  for (const leg of [p.legL, p.legR]) {
+    leg.add(part(cap(0.075, 0.12), suit, 0, -0.12, 0))
+    leg.add(part(box(0.15, 0.09, 0.22), mat(0x4a3a2a, { rough: 0.9 }), 0, -0.27, 0.04))
+  }
+  const body = part(sph(0.32, 14, 12), suit, 0, 0.55, 0)
+  body.scale.set(1.05, 0.95, 0.95)
+  const belly = part(sph(0.12, 8, 6), patch, 0.12, 0.5, 0.27)
+  belly.scale.set(1, 1, 0.35)
+  const bag = part(box(0.36, 0.38, 0.2), mat(0x6a5038, { rough: 0.9 }), 0, 0.6, -0.3)
+  const junk = part(cyl(0.05, 0.05, 0.3, 6), metal, 0.1, 0.85, -0.32)
+  junk.rotation.z = 0.5
+  p.armL.position.set(-0.32, 0.62, 0)
+  p.armR.position.set(0.32, 0.62, 0)
+  for (const arm of [p.armL, p.armR]) {
+    arm.add(part(cap(0.06, 0.14), suit, 0, -0.12, 0))
+    arm.add(part(sph(0.07, 8, 6), skin, 0, -0.26, 0.02))
+  }
+  // Baş: gövdeye kaynaşık, iki kocaman göz ve anten.
+  p.head.position.set(0, 0.92, 0.02)
+  const head = part(sph(0.27, 16, 12), skin)
+  head.scale.set(1.12, 0.9, 1)
+  p.head.add(head)
+  p.head.add(cuteEye(0.12, 0x10141e, -0.12, 0.04, 0.17), cuteEye(0.12, 0x10141e, 0.12, 0.04, 0.17))
+  p.head.add(smile(0.05, -0.12, 0.23))
+  const ant = part(cyl(0.012, 0.012, 0.28, 5), metal, 0.06, 0.32, -0.02)
+  ant.rotation.z = -0.25
+  const bulb = part(sph(0.045, 8, 6), shine(0x9aff6a, 2), 0.1, 0.46, -0.02)
+  p.head.add(ant, bulb)
+  p.hips.add(body, belly, bag, junk)
+  p.wiggle.push(bulb)
+  return p
+}
+
+/* ---------------- Tombişler: Altınların kuzenleri — tombul, bebek yüzlü, süzülen minikler ----------------
+   Koca yuvarlak kafa, pembe yanaklar, yumru göbek, minik kol-bacak. Altın tulum, önlük, tepesinde püsküllü
+   yumuşak külah ve alnında Altınlarınkine benzeyen küçük bir yıldız: akraba olduklarını hemen belli eder. */
+function cherub(look: CreatureLook): Parts {
+  const p = frame()
+  const skin = mat(look.skin ?? 0xffd9c2, { rough: 0.55, glow: 0.18 })
+  const suit = mat(look.body ?? 0xf2c860, { rough: 0.5, metal: 0.3, glow: 0.14 })
+  const bibM = mat(0xfff6e4, { rough: 0.7, glow: 0.12 })
+  const starM = shine(0xffd34a, 2.2)
+  p.legL.position.set(-0.13, 0.3, 0)
+  p.legR.position.set(0.13, 0.3, 0)
+  for (const leg of [p.legL, p.legR]) {
+    const thigh = part(sph(0.1, 10, 8), suit, 0, -0.08, 0)
+    thigh.scale.set(1, 1.2, 1)
+    const foot = part(sph(0.085, 10, 8), skin, 0, -0.22, 0.04)
+    foot.scale.set(1, 0.7, 1.35)
+    leg.add(thigh, foot)
+  }
+  // Tombul gövde: armut göbek, önlük, önlükte yıldız.
+  const body = part(sph(0.3, 16, 12), suit, 0, 0.5, 0)
+  body.scale.set(1.08, 1, 1)
+  const belly = part(sph(0.2, 12, 10), skin, 0, 0.46, 0.15)
+  belly.scale.set(1, 0.95, 0.62)
+  const bib = part(sph(0.17, 12, 8), bibM, 0, 0.66, 0.2)
+  bib.scale.set(1.05, 0.75, 0.35)
+  const bibStar = part(oct(0.035), starM, 0, 0.66, 0.27)
+  // Minik kanatçıklar: süzülmelerinin sebebi (kuzenleri gibi havada dururlar).
+  const wingM = new MeshBasicMaterial({ color: 0xfff1c0, transparent: true, opacity: 0.55, side: DoubleSide, depthWrite: false })
+  const wings: Mesh[] = []
+  for (const side of [-1, 1]) {
+    const w = part(sph(0.15, 10, 6), wingM, side * 0.2, 0.68, -0.26)
+    w.scale.set(1.3, 0.8, 0.12)
+    w.rotation.y = side * 0.6
+    wings.push(w)
+  }
+  p.armL.position.set(-0.3, 0.6, 0)
+  p.armR.position.set(0.3, 0.6, 0)
+  for (const arm of [p.armL, p.armR]) {
+    const up = part(sph(0.075, 10, 8), suit, 0, -0.07, 0)
+    up.scale.set(1, 1.3, 1)
+    arm.add(up, part(sph(0.07, 10, 8), skin, 0, -0.2, 0.02))
+  }
+  // Kafa: gövdeden büyük, kocaman parlak gözler, yanaklar, minik ağız, tek tutam perçem, külah.
+  p.head.position.set(0, 1.02, 0.02)
+  const head = part(sph(0.36, 20, 16), skin)
+  head.scale.set(1.08, 1, 1)
+  p.head.add(head)
+  p.head.add(cuteEye(0.1, 0x3a2410, -0.13, 0.02, 0.27), cuteEye(0.1, 0x3a2410, 0.13, 0.02, 0.27))
+  p.head.add(blush(-0.22, -0.1, 0.27, 0.07), blush(0.22, -0.1, 0.27, 0.07))
+  p.head.add(smile(0.04, -0.15, 0.335))
+  const curl = part(tor(0.05, 0.016), mat(0xf6dc7a, { rough: 0.5, glow: 0.2 }), 0, 0.3, 0.2)
+  curl.rotation.y = Math.PI / 2
+  const hat = part(cone(0.24, 0.34, 14), suit, 0, 0.38, -0.04)
+  hat.rotation.x = -0.25
+  const brim = part(tor(0.24, 0.045), bibM, 0, 0.24, -0.02)
+  brim.rotation.x = Math.PI / 2 - 0.25
+  const tassel = part(sph(0.06, 10, 8), bibM, 0, 0.56, -0.12)
+  const brow = part(oct(0.03), starM, 0, 0.2, 0.3)
+  p.head.add(curl, hat, brim, tassel, brow)
+  p.hips.add(body, belly, bib, bibStar, ...wings)
+  p.wiggle.push(tassel, ...wings)
+  return p
+}
+
 const BUILDERS: Record<CreatureForm, (look: CreatureLook) => Parts> = {
   astronaut,
   colonist,
@@ -882,6 +1040,8 @@ const BUILDERS: Record<CreatureForm, (look: CreatureLook) => Parts> = {
   regal,
   yeti,
   wild,
+  gariban,
+  cherub,
 }
 
 /** Tür görünümünden yürüyen bir gövde kurar. Ayaklar kökün `FEET` kadar altındadır. */
@@ -896,6 +1056,7 @@ export function buildCreature(look: CreatureLook): Rig {
   root.add(lift)
   root.userData.form = look.form
   if (p.hips.userData.cape) root.userData.cape = p.hips.userData.cape
+  if (p.hips.userData.hair) root.userData.hair = p.hips.userData.hair
   return { root, armL: p.armL, armR: p.armR, legL: p.legL, legR: p.legR, head: p.head, style: look.style, hips: lift, wiggle: p.wiggle }
 }
 

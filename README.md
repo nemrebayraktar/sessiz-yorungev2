@@ -34,6 +34,8 @@ Savaşta 2–5 avcıya karşı it dalaşı vardır. Kazanınca enerji ganimeti v
 
 Geliştirmeler: gövde, kalkan, silah, motor, gizlilik. Motor itişi artırır, gizlilik aynı itişin daha az gürültü çıkarmasını sağlar.
 
+**Akış:** oyun ev gezegeninde, yaya başlar. Önce evini tanırsın (yürü, kaz, savun, ekip topla), sonra Ay'a gidip üs kurarsın, ardından kendi sistemindeki gezegenleri Garibanlardan temizleyip kolonileştirirsin. Diğer türler de aynı anda kendi sistemlerinde büyür. Eğitim bitince **Karanlık Orman** başlar: türler solucan deliklerinden birbirine ve sana saldırır; harita kimin nereyi aldığını renklerle gösterir.
+
 ## Kontroller
 
 | Tuş | Eylem |
@@ -47,14 +49,14 @@ Geliştirmeler: gövde, kalkan, silah, motor, gizlilik. Motor itişi artırır, 
 | Sol tık | Ateş, gürültülü |
 | `R` | Ufka dengele |
 | `C` | Kovalamaca kamerası / kokpit |
-| `F` | Filoyla kapış veya yeterince uzaktaysan kaç |
+| `F` | Filoyla kapış; savaşta hedefe kilitlen (seri silahlar kilitli hedefe döner, ağır silahları elle nişanla) |
 | `G` | Gemide: özel yetenek · Yayayken: ırk yeteneği (Hava desteği, Deprem, Gölge adımı…) |
 | `H` | Mini kara delik (Kepler-452b) |
 | `X` | Açık silahlar arasında geç |
 | `L` | Gezegene in (geminin altına; üssüne ~150 birimden yakınsan üssün yanına) / yüzeyde gemiye bin |
 | `Shift+L` | Doğrudan kendi üssünün yanına in (Harita → "⌂ Üsse in" de aynı) |
 | `B` | Yüzeyde üs ya da karakol kur; üssün yanında onar / yükselt |
-| `T` | Yüzeyde: üssün yanında kara tareti kur (taretin yanında: yükselt, 3 seviye) · Gemide: tarama |
+| `T` | Yüzeyde: üssün yanında kara tareti kur (taretin yanında: yükselt, 3 seviye) · Gemide: tarama (sistemdeki ırklar, koloniler, asker ve taretler; seni 10 sn görünür kılar) |
 | `Shift+T` | Yüzeyde: hava savunma tareti kur (gezegene yaklaşan gemileri vurur) |
 | `V` | Sessiz süzülme: motor kapalı, yavaş ama neredeyse görünmez |
 | `O` | Diplomasi paneli (hediye, ticaret, ittifak, haraç, sömürge, savaş) |
@@ -72,7 +74,7 @@ Geliştirmeler: gövde, kalkan, silah, motor, gizlilik. Motor itişi artırır, 
 | `Esc` | Duraklat |
 | `M` | Sesi kapat / aç |
 
-**Baskın ekibi:** üssündeki yancılar (ırkının küçük sürümü) ve üs seviyesiyle açılan ana karakterler `K` ile en fazla 8 kişilik ekip olur. Gemideyken eşlik gemisi olarak yanında uçar ve çatışmada ateş eder; indiğin gezegende yerlilere ve düşman üssüne saldırır. Düşman üssünü düşürürlerse üs senin olur ve ekip oraya yerleşir; boş gezegende karakol kurarsan (`B`) da ekip oraya katılır.
+**Baskın ekibi:** üssündeki yancılar (ırkının küçük sürümü) ve üs seviyesiyle açılan ana karakterler `K` ile ekip olur. Gemin 4, her eşlik gemisi 5 kişi taşır (başta en çok 12, gövde geliştirmesi artırır); kaç kişi alacağını Y panelindeki −/+ ile seçersin. Gemideyken eşlik gemisi olarak yanında uçar ve çatışmada ateş eder; indiğin gezegende yerlilere ve düşman üssüne saldırır. Düşman üssünü düşürürlerse üs senin olur ve ekip oraya yerleşir; boş gezegende karakol kurarsan (`B`) da ekip oraya katılır.
 
 Ok tuşları da yön verir. **Kolay mod** kanatları dünya yukarısına göre düz tutar ve burnun ±80°'den fazla dikleşmesine izin vermez. **Harita** düğmesi kapı ağını gösterir; **⌂ Eve dön** kapı kapı ev gezegenine rota kurar. İşaretçi kilitlenmezse fareyi basılı tutarak bakılır. Dokunmatik ekranda sol çubuk itişi, sağ taraf bakışı yönetir.
 

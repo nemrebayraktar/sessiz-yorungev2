@@ -27,12 +27,12 @@ if (pwa.manifest !== './manifest.webmanifest' || !pwa.apple) errors.push(`pwa li
 const man = await S(() => fetch('./manifest.webmanifest').then((r) => r.json()).catch(() => null))
 if (!man || man.icons?.length < 2) errors.push('manifest missing/invalid')
 
-// 1) Öğretici zincir sırası.
+// 1) Öğretici zincir sırası (evden başlar: yürü, kaz, savun, ekip; sonra Ay ve kendi sistemin).
 const ids = await S(() => window.__sessiz.questIds())
-const want = ['fly', 'land', 'walk', 'mine', 'silent', 'scan', 'scout', 'home', 'fortify', 'squad', 'order', 'wave', 'airdef', 'upgrade', 'gate', 'meet', 'outpost', 'aa', 'capture', 'avlu', 'free']
+const want = ['walk', 'mine', 'fortify', 'squad', 'fly', 'land', 'clear', 'outpost', 'silent', 'scan', 'orbit', 'outpost2', 'order', 'wave', 'airdef', 'upgrade', 'gate', 'meet', 'aa', 'capture', 'avlu', 'free']
 if (ids.join() !== want.join()) errors.push(`quest chain ${ids.join()}`)
 
-// 2) Kaynak toplama: Ay'da yatağa yürü ve kaz → 'mine' görevi biter.
+// 2) Kaynak toplama: Ay'da yatağa yürü ve kaz → 'mine' görevi biter, 'fortify' gelir.
 await S(() => window.__sessiz.landOnId('ay'))
 await S(() => window.__sessiz.questGo('mine'))
 const dep = await S(() => window.__sessiz.toDeposit())
@@ -42,12 +42,13 @@ const m1 = await S(() => window.__sessiz.mineHit())
 if (!m1?.ok || m1.ore + m1.crystal < 1) errors.push(`mining failed ${JSON.stringify(m1)}`)
 await S(() => window.__sessiz.stepWorld(30))
 let q = await S(() => window.__sessiz.questInfo())
-if (q.id !== 'silent') errors.push(`mine quest did not advance (${q.id})`)
+if (q.id !== 'fortify') errors.push(`mine quest did not advance (${q.id})`)
 
-// 3) Sessiz süzülme: bin, V, 3+ sn → 'scan'.
+// 3) Sessiz süzülme: bin, V, 3+ sn → 'scan'; T → 'orbit'.
 await S(() => window.__sessiz.toShip())
 await S(() => window.__sessiz.board())
 if ((await S(() => window.__sessiz.snap().layer)) !== 'ship') errors.push('board failed')
+await S(() => window.__sessiz.questGo('silent'))
 await page.keyboard.press('KeyV')
 await S(() => window.__sessiz.stepWorld(60 * 4))
 q = await S(() => window.__sessiz.questInfo())
@@ -55,38 +56,31 @@ if (q.id !== 'scan') errors.push(`silent quest did not advance (${q.id})`)
 await page.keyboard.press('KeyT')
 await S(() => window.__sessiz.stepWorld(30))
 q = await S(() => window.__sessiz.questInfo())
-if (q.id !== 'scout') errors.push(`scan quest did not advance (${q.id})`)
+if (q.id !== 'orbit') errors.push(`scan quest did not advance (${q.id})`)
+const scanPanel = await S(() => !document.getElementById('scan-panel')?.classList.contains('hidden'))
+if (!scanPanel) errors.push('scan report not shown')
 
-// 4) Keşif gemisi: birkaç saniyede belirir, radarda görünür; sessiz yaklaşınca savaş başlar, düşünce görev biter.
-let sc = []
-for (let k = 0; k < 8 && !sc.length; k++) {
+// 4) Yörüngeyi temizle: ikinci gezegenin çevresinde Gariban hurda gemileri; yaklaşınca savaş, düşünce görev biter.
+let gi = await S(() => window.__sessiz.garibanInfo())
+for (let k = 0; k < 4 && !gi.fleets.length; k++) {
   await S(() => window.__sessiz.stepWorld(60))
-  sc = await S(() => window.__sessiz.scoutInfo())
+  gi = await S(() => window.__sessiz.garibanInfo())
 }
-console.log('scout', sc)
-if (sc.length !== 1) errors.push(`scout count ${sc.length}`)
-else if (!(sc[0].revealed > 0)) errors.push('scout not revealed on radar')
+console.log('gariban', JSON.stringify(gi))
+if (!gi.planet2) errors.push('no second planet picked')
+if (gi.fleets.length !== 1) errors.push(`gariban fleets ${gi.fleets.length}`)
 await S(() => window.__sessiz.skipRender(true))
-await S(() => window.__sessiz.flyToScout(26))
+await S(() => window.__sessiz.flyToGariban(30))
 await S(() => window.__sessiz.stepWorld(5))
 const fight = await S(() => window.__sessiz.snap())
-if (!(fight.alive > 0)) errors.push(`scout combat did not start (alive ${fight.alive}, mode ${fight.mode ?? ''})`)
+if (!(fight.alive > 0)) errors.push(`gariban combat did not start (alive ${fight.alive})`)
 await S(() => window.__sessiz.wipe())
 for (let k = 0; k < 20; k++) {
   await S(() => window.__sessiz.stepWorld(30))
-  if ((await S(() => window.__sessiz.questInfo())).id !== 'scout') break
+  if ((await S(() => window.__sessiz.questInfo())).id !== 'orbit') break
 }
 q = await S(() => window.__sessiz.questInfo())
-if (q.id !== 'home') errors.push(`scout quest did not complete (${q.id})`)
-// Gürültülü yaklaşırsan kaçar.
-await S(() => window.__sessiz.questGo('scout'))
-await S(() => window.__sessiz.spawnScout())
-await S(() => window.__sessiz.flyToScout(120))
-await S(() => window.__sessiz.setVis(80))
-await S(() => window.__sessiz.stepWorld(3))
-sc = await S(() => window.__sessiz.scoutInfo())
-if (!sc.some((s) => s.state === 'leave')) errors.push(`loud approach did not scare the scout ${JSON.stringify(sc)}`)
-await S(() => window.__sessiz.setVis(0))
+if (q.id !== 'outpost2') errors.push(`orbit quest did not complete (${q.id})`)
 
 // 5) Gemi parçaları: iki seçenek, kaynak ister, efsane parça 5. kademede ve gemide görünür ek.
 await S(() => window.__sessiz.landOnId('dunya'))
@@ -155,7 +149,9 @@ const home = caps.find((c) => c && c.id === 'dunya')
 console.log('cap', home)
 if (!home || !(home.cap > home.base)) errors.push(`earth cap not boosted ${JSON.stringify(home)}`)
 
-// 9) Karşılaşma: barış teklifi kabul edilirse filo ayrılır; ilişki artar. Sömürge seçeneği.
+// 9) Karşılaşma (diplomasi karanlık ormandan sonra açılır: kapı adımına geç):
+await S(() => window.__sessiz.questGo('meet'))
+// 9) barış teklifi kabul edilirse filo ayrılır; ilişki artar. Sömürge seçeneği.
 await S(() => window.__sessiz.board())
 await S(() => window.__sessiz.flyTo('dunya', 80))
 if (!(await S(() => window.__sessiz.encounterNow('kepler186')))) errors.push('encounter did not open')

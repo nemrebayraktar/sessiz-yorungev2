@@ -45,7 +45,7 @@ export type SavedGame = {
   squad: { kind: string; hull: number; hullMax: number }[]
   stranded: { planetId: string; universe: string; dir: V3; crew: { kind: string; hull: number; hullMax: number }[] }[]
   lastTalk: Record<string, number>
-  flags?: { tour?: boolean; avlu?: boolean }
+  flags?: { tour?: boolean; avlu?: boolean; df?: boolean }
 }
 
 export function readGame(): SavedGame | null {

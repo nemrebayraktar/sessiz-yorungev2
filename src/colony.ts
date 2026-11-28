@@ -105,7 +105,7 @@ export type TurretKind = 'kara' | 'hava'
 export const TURRET_MAX_LVL = 3
 export const turretUpCost = (lvl: number) => ({ energy: 25 * lvl, ore: 3 * lvl, crystal: lvl >= 2 ? 2 : 0 })
 export const turretLvlMul = (lvl: number) => 1 + 0.4 * (lvl - 1)
-export const AA_RANGE = 130
+export const AA_RANGE = 300
 
 /** Nüfusun çoğu yancıdır (küçük, zayıf, ırkın sade sürümü). Ana karakterler (koruyucu, nişancı)
  *  seviyeyle açılır: sv 2'de 1, sv 5'te 4. Baskın ekibinin kalbi bunlardır. */
@@ -224,6 +224,8 @@ export type Unit = {
   spec: InvaderSpec
   faction: OriginId // hangi türden
   invader: boolean // saldıran mı, yerleşimci mi
+  /** Vurulan gemiden gezegene düşen yaralı mürettebat (oyuncuyu arar). */
+  fallen?: boolean
   colonyId: string // yerleşimcinin üssü (gezegen kimliği)
   root: Group
   rig: Rig
@@ -245,4 +247,6 @@ export type Unit = {
   carry?: 'ore' | 'crystal' | null
   /** Komutanın adı. */
   name?: string
+  /** Hasar çarpanı (güçlü ırkların savunmacıları). */
+  dmgMul?: number
 }

@@ -5,7 +5,7 @@ import { chromium } from 'playwright'
 const errors = []
 const browser = await chromium.launch({
   headless: true,
-  args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-webgl', '--ignore-gpu-blocklist', '--disable-background-timer-throttling'],
+  args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-webgl', '--ignore-gpu-blocklist', '--disable-background-timer-throttling', '--js-flags=--expose-gc'],
 })
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
 page.on('pageerror', (err) => errors.push(`pageerror: ${err.message}`))
@@ -74,6 +74,8 @@ const edge = await page.evaluate(() => {
 if (edge.max > 150) errors.push(`ship went ${Math.round(edge.max)} past the edge`)
 if (edge.last > -100) errors.push(`ship did not turn back from the edge (${Math.round(edge.last)})`)
 
+// Yazılımsal GL'de kareler saniyeler sürüyor: hesap ağırlıklı bölümlerde çizim kapalı.
+await page.evaluate(() => window.__sessiz.skipRender(true))
 // 6) Eve dön: Kepler-452'den kapı kapı Dünya'ya.
 await page.evaluate(() => window.__sessiz.jump('kepler452'))
 await page.waitForFunction(() => window.__sessiz.snap().universe === 'kepler452' && !window.__sessiz.snap().fading)
@@ -85,12 +87,14 @@ for (; jumps < 6; jumps++) {
   if (here === 'gunes') break
   if (!next) break
   await page.evaluate((n) => window.__sessiz.jump(n), next)
-  await page.waitForFunction((n) => window.__sessiz.snap().universe === n && !window.__sessiz.snap().fading, next)
+  await page.waitForFunction((n) => window.__sessiz.snap().universe === n && !window.__sessiz.snap().fading, next, { timeout: 90000 })
+  await page.evaluate(() => window.gc?.())
 }
 const final = await page.evaluate(() => ({ u: window.__sessiz.snap().universe, hint: document.getElementById('route-hint').textContent }))
 if (final.u !== 'gunes' || jumps !== 4) errors.push(`route home ended in ${final.u} after ${jumps} jumps`)
 if (!final.hint.includes('Dünya')) errors.push(`route hint at home: ${final.hint}`)
 
+await page.evaluate(() => window.__sessiz.skipRender(false))
 // 7) Sağ alt: radar ↔ sistem haritası.
 await page.evaluate(() => window.__sessiz.toggleRadar())
 if ((await page.evaluate(() => window.__sessiz.radarMode())) !== 'system') errors.push('radar did not switch to system map')

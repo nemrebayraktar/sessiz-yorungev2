@@ -89,16 +89,21 @@
         <div id="floats"></div>
         <div id="feed" aria-live="off"></div>
         <button id="quest" class="hidden" type="button" aria-label="Görev günlüğünü aç">
-          <span id="q-ch"></span>
-          <strong><i>◆</i> <span id="q-title"></span></strong>
-          <small id="q-hint"></small>
+          <span id="q-num">1</span>
+          <span class="q-body">
+            <span id="q-ch"></span>
+            <strong><i>◆</i> <span id="q-title"></span></strong>
+            <small id="q-hint"></small>
+            <span class="q-bar"><i id="q-prog"></i></span>
+          </span>
         </button>
+        <div id="gps-mark" class="hidden" aria-hidden="true"><i>➤</i><b id="gps-name">GPS</b><span id="gps-dist"></span></div>
         <div id="quest-mark" class="hidden" aria-hidden="true"><i>◆</i><span id="quest-dist"></span></div>
         <div id="base-mark" class="hidden" aria-hidden="true"><i>⌂</i><b id="base-mark-name">Üssün</b><span id="base-mark-dist"></span></div>
         <div id="dep-mark" class="hidden" aria-hidden="true"><i>⛏</i><span id="dep-dist"></span></div>
         <div id="opp-mark" class="hidden" aria-hidden="true"><i>▲</i><b>Yük kapsülü</b><span id="opp-dist"></span></div>
         <div id="ship-mark" class="hidden" aria-hidden="true"><i>▲</i><b>Gemin</b><span id="ship-dist"></span></div>
-        <div id="cine" class="hidden" aria-live="polite"><p id="cine-cap"></p><small id="cine-skip">Enter / dokun: geç</small></div>
+        <div id="cine" class="hidden" aria-live="polite"><h1 id="cine-title"></h1><p id="cine-cap"></p><small id="cine-skip">Enter / dokun: geç</small></div>
         <div id="celebrate" aria-live="polite"><strong id="cel-title"></strong><span id="cel-sub"></span></div>
         <div id="lore-card" class="hidden" aria-live="polite"><p id="lore-name" class="eyebrow"></p><p id="lore-text"></p></div>
         <div id="base-hud" class="hidden">
@@ -106,7 +111,9 @@
           <div class="track hull"><i id="base-core-fill"></i></div>
           <p id="base-line"></p>
         </div>
+        <div id="cmd-strip" class="hidden"></div>
         <div id="planet-card" class="hidden"></div>
+        <div id="scan-panel" class="hidden"></div>
         <div id="save-dot" aria-hidden="true">● kaydedildi</div>
         <div id="heat" class="hidden"><span id="heat-txt">Isı</span><i id="heat-fill"></i></div>
         <p id="unlock"></p>
@@ -189,13 +196,15 @@
       <div id="boarding" class="overlay hidden">
         <div class="panel">
           <p class="eyebrow">Biniş</p>
-          <h2>Kimler binsin?</h2>
+          <h2>Kimler binsin, kimler kalsın?</h2>
+          <p id="board-landed" class="fine"></p>
           <p id="board-cap" class="fine"></p>
           <div id="board-list" class="board-list"></div>
           <div class="enc-grid">
             <button id="board-best" type="button">En iyileri al</button>
-            <button id="board-all" type="button">Sığanları al</button>
+            <button id="board-all" type="button">Herkes kalsın</button>
           </div>
+          <button id="board-abandon" class="hidden" type="button">Üssü terk et (herkesi al, gezegeni boşalt)</button>
           <p id="board-left" class="fine"></p>
           <button id="board-go" class="primary" type="button">Bin ve kalk</button>
           <button id="board-x" type="button">Vazgeç</button>
@@ -209,6 +218,8 @@
           <button id="map-home" class="primary" type="button">⌂ Eve dön</button>
           <canvas id="net-map" width="1040" height="560" aria-label="Solucan deliği ağı"></canvas>
           <p id="net-line" class="fine"></p>
+          <h3 class="guide-h" id="sys-title">Bu sistem</h3>
+          <canvas id="sys-map" width="1040" height="460" aria-label="Bu sistemin haritası: bir gezegene dokun, GPS oraya götürsün"></canvas>
           <div id="map-list"></div>
           <button id="map-close" class="primary" type="button">Kapat</button>
         </div>

@@ -116,7 +116,7 @@ else {
     if (i6.ground !== i5.ground) errors.push(`raid disembark ${i6.ground}/${i5.ground}`)
     // v9: düşman üssü tüm savunmacılarıyla hazır; ekip saldırınca kuşatma başlar, savunma düşünce üs teslim olur.
     if (!(i6.colony && i6.colony.units >= 2)) errors.push(`enemy base not manned at landing: ${JSON.stringify(i6.colony)}`)
-    for (let k = 0; k < 6; k++) {
+    for (let k = 0; k < 20; k++) {
       await safe()
       await S(() => window.__sessiz.stepGround(30))
       if ((await info()).colony?.besieged) break

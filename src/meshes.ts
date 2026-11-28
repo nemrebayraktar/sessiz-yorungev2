@@ -1247,6 +1247,37 @@ export function buildDwelling(form: string, color: number, seed = 0) {
   add(new Mesh(new CylinderGeometry(1.25, 1.45, 1.2, 10), darkM), 0, -0.45, 0)
   const door = (y: number, z: number, w = 0.34, h = 0.5) => add(new Mesh(new BoxGeometry(w, h, 0.06), lightM), 0, y, z)
   switch (form) {
+    case 'cherub': {
+      // Beşik ev: krem kubbe, altın şeritler, yuvarlak ışıklı pencere ve tepede yıldız.
+      const cream = new MeshStandardMaterial({ color: 0xfff1d8, roughness: 0.6, flatShading: true })
+      const goldM = new MeshStandardMaterial({ color: 0xe8b84a, roughness: 0.35, metalness: 0.7, flatShading: true })
+      add(new Mesh(new SphereGeometry(1.15, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2), cream), 0, 0.05, 0)
+      for (let k = 0; k < 4; k++) {
+        const band = add(new Mesh(new TorusGeometry(1.15, 0.05, 6, 20, Math.PI), goldM), 0, 0.05, 0)
+        band.rotation.y = (k / 4) * Math.PI
+      }
+      add(new Mesh(new CylinderGeometry(0.3, 0.3, 0.06, 14), lightM), 0, 0.55, 1.02).rotation.x = Math.PI / 2 - 0.5
+      add(new Mesh(new OctahedronGeometry(0.22), lightM), 0, 1.45, 0)
+      door(0.25, 1.05, 0.4, 0.45)
+      break
+    }
+    case 'gariban': {
+      // Hurda kulübe: eğri sac duvarlar, yamalar, çanak anten ve ışıklı pencere.
+      const rust = new MeshStandardMaterial({ color: 0x8a5a3a, roughness: 0.85, metalness: 0.3, flatShading: true })
+      const tin = new MeshStandardMaterial({ color: 0x7a8288, roughness: 0.6, metalness: 0.5, flatShading: true })
+      const hut = add(new Mesh(new BoxGeometry(1.7, 1.1, 1.5), tin), 0, 0.5, 0)
+      hut.rotation.y = 0.12 + seed * 0.3
+      hut.rotation.z = 0.05
+      add(new Mesh(new BoxGeometry(1.95, 0.12, 1.75), rust), 0, 1.1, 0).rotation.z = -0.12
+      add(new Mesh(new BoxGeometry(0.5, 0.45, 0.04), rust), -0.45, 0.6, 0.77)
+      add(new Mesh(new BoxGeometry(0.35, 0.3, 0.06), lightM), 0.35, 0.65, 0.76)
+      const pole = add(new Mesh(new CylinderGeometry(0.035, 0.035, 1.2, 5), tin), 0.6, 1.6, -0.4)
+      pole.rotation.z = 0.15
+      const dish = add(new Mesh(new SphereGeometry(0.32, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2.4), tin), 0.7, 2.15, -0.4)
+      dish.rotation.x = -2.1
+      add(new Mesh(new BoxGeometry(0.6, 0.35, 0.5), rust), -0.95, 0.15, -0.5).rotation.y = 0.6
+      break
+    }
     case 'astronaut': {
       add(new Mesh(new SphereGeometry(1.1, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2), wallM), 0, 0.1, 0)
       add(new Mesh(new TorusGeometry(1.1, 0.06, 6, 24), lightM), 0, 0.3, 0).rotation.x = Math.PI / 2

@@ -127,7 +127,7 @@ import { SAVE_VERSION, readGame, writeGame, type SavedColony, type SavedGame, ty
 import { buildLandmark, dressPlanet, planetLook, planetYield, scatterDeposits, scatterFeatures, spinLandmark, tickPlanet, type Deposit, type Feature, type PlanetLook } from './planets'
 import { SHIP_STYLE, setShipHalos, spinShip } from './ships'
 import { QUESTS, RACE_STORY, PROLOGUE, EPILOGUE, SYSTEM_LORE, planetLore, type QuestText } from './story'
-import { factionName, footTrait, nativeLook, originLook } from './species'
+import { CHERUB_LOOK, GARIBAN_LOOK, factionName, footTrait, nativeLook, originLook } from './species'
 import { skillOf } from './skills'
 import { Fx } from './fx'
 import { SLOTS, nextOptions, partById, sumMods, tierCost, type Cost, type Part } from './parts'
@@ -208,6 +208,8 @@ type Fleet = {
   scout?: boolean
   /** Eğitim akıncısı: ev üssünün üstünde dönüp bombalar. */
   bomber?: boolean
+  /** Garibanların hurda gemileri: bu gezegenin yörüngesinde dolaşır. */
+  gariban?: string
 }
 
 /** Uzay savaşında düşen ganimet parçası: yakına gelince oyuncuya çekilir. */
@@ -262,7 +264,7 @@ type Enemy = {
   smokeT?: number
 }
 
-type ShotKind = 'bolt' | 'homing' | 'goo' | 'laser' | 'pellet' | 'rocket' | 'plasma' | 'chain'
+type ShotKind = 'bolt' | 'homing' | 'goo' | 'laser' | 'pellet' | 'rocket' | 'plasma' | 'chain' | 'flak'
 
 type Shot = {
   alive: boolean
@@ -374,6 +376,7 @@ const bX = new Vector3()
 const bY = new Vector3()
 const bZ = new Vector3()
 const qB = new Quaternion()
+const qC = new Quaternion()
 const basis = new Matrix4()
 const WORLD_UP = new Vector3(0, 1, 0)
 const AXIS_X = new Vector3(1, 0, 0)
@@ -414,14 +417,18 @@ function timeFactorAt(r: number, rs = RS, curve = 1.65) {
   return Math.max(0.08, Math.pow(gr, curve))
 }
 /** Baskın ekibi sınırları ve eşlik gemilerinin kanat düzeni (gemi yerel ekseni; ileri −Z). */
-const SQUAD_MAX = 8
 const SQUAD_HEROES = 3
 const ESCORT_SLOTS: [number, number, number][] = [
   [-5.5, -0.6, -2],
   [5.5, -0.6, -2],
   [-3.2, 1.8, 1],
   [3.2, 1.8, 1],
+  [-8.5, 0.8, 3],
+  [8.5, 0.8, 3],
 ]
+/** Senin gemin 4 kişi taşır; her eşlik (nakliye) gemisi 5 kişi daha. */
+const SHIP_CREW = 4
+const ESCORT_CREW = 5
 type HitBy = 'player' | 'turret' | 'unit' | 'local'
 /** Türkçe yönelme eki: Merkür'e, Ay'a, Titan'a, TRAPPIST-1e'ye. */
 function dative(name: string) {
@@ -575,7 +582,7 @@ class Game {
   cloakT = 0
   wellLife = 0
   wellPos = new Vector3()
-  enemyWells: { alive: boolean; pos: Vector3; life: number; owner: Enemy | null; mesh: Group }[] = []
+  enemyWells: { alive: boolean; pos: Vector3; life: number; owner: Enemy | null; mesh: Group; size?: number }[] = []
   boltMat!: MeshBasicMaterial
   homingMat!: MeshBasicMaterial
   gooMat!: MeshBasicMaterial
@@ -691,6 +698,19 @@ class Game {
   noTalk = false
   scoutT = 0
   scoutFight = false
+  garibanFight = false
+
+  /** 'Yörüngeyi temizle' adımı: ikinci gezegenin çevresinde Gariban hurda gemileri (yoksa yeniden belirir). */
+  private ensureGaribanGuard() {
+    if (this.fleets.some((f) => f.gariban) || this.garibanFight || !this.questPlanet2) return
+    const gp = this.planets.find((p) => p.def.id === this.questPlanet2)
+    if (!gp) return
+    const f = this.spawnFleet(3, 0.4, gp.pos.clone().add(new Vector3(gp.def.radius + 40, 14, 0)), 'patrol')
+    f.faction = undefined
+    f.gariban = gp.def.id
+    f.small = true
+    f.talked = true
+  }
   questPlanetId = ''
   questT = 0
   questDoneT = 0
@@ -1030,12 +1050,22 @@ class Game {
   camDist = 9
 
   private orderWasShip = false
+  private ordersRefreshT = 1
   private handleGlobalKeys() {
     if (this.input.pressed('KeyM')) this.toggleMute()
     const shipOrder = this.input.touchOrder && !this.orderWasShip
     this.orderWasShip = this.input.touchOrder
     if ((this.input.pressed('KeyY') || shipOrder) && this.mode === 'map' && this.layer === 'ship') this.toggleOrders()
     this.paintPlanetCard(1 / 60)
+    this.paintCmdStrip()
+    if (this.orderOpen) {
+      this.ordersRefreshT -= 1 / 60
+      if (this.ordersRefreshT <= 0) {
+        this.ordersRefreshT = 1
+        // Yalnız eğitim sürerken yenile (tıklamaları bozmasın).
+        if (Object.values(this.colonies).some((c) => c && this.mine(c) && ((c.trainQ ?? 0) > 0 || (c.cmdT ?? 0) > 0))) this.renderOrders()
+      }
+    }
     if (this.input.pressed('KeyJ') && (this.mode === 'map' || this.mode === 'combat')) {
       const j = must<HTMLElement>('journal')
       if (j.classList.contains('hidden')) this.openJournal('quest')
@@ -1156,7 +1186,7 @@ class Game {
     this.grace = Math.max(0, this.grace - dt)
     this.gateWarnT = Math.max(0, this.gateWarnT - dt)
     // Eğitimde ev sistemi sakin: keşif gemisi görevine kadar gürültü filo çağırmaz.
-    if (this.grace <= 0 && (!this.isHome() || this.tutorialAt('home'))) this.checkBands()
+    if (this.grace <= 0 && (!this.isHome() || this.tutorialAt('gate'))) this.checkBands()
     this.updateFleets(worldDt)
     if (this.layer === 'ship') this.updateSkirmish(dt)
     this.updateEscorts(dt)
@@ -1182,7 +1212,8 @@ class Game {
       }
     }
     this.pollGear()
-    if (this.layer === 'ship' && this.input.pressed('KeyF')) {
+    if (this.layer === 'ship' && this.input.pressed('KeyF') && this.fighting()) this.toggleLock()
+    else if (this.layer === 'ship' && this.input.pressed('KeyF')) {
       const near = this.nearestFleet(140)
       if (near && near.fleet.state !== 'leave') {
         const fac = near.fleet.faction
@@ -1202,6 +1233,7 @@ class Game {
     if (this.input.pressed('KeyO')) this.openDiplo()
     this.shipTactics(dt)
     this.raidTick(dt)
+    this.botLaunch(dt)
     this.bomberTick(dt)
     this.oppTick(dt)
     this.autosave(dt)
@@ -1276,7 +1308,8 @@ class Game {
     if (this.forceAim && this.enemies.length) this.aimAssist(dt)
     const axes = this.axes(true)
     const move = Math.abs(axes.f) + Math.abs(axes.s) * 0.75 + Math.abs(axes.u) * 0.75
-    this.boosting = axes.boost && move > 0.04
+    // Takviye (Shift) yalnız ileri giderken: geri vitesle hızlanılmaz.
+    this.boosting = axes.boost && move > 0.04 && axes.f >= 0
     if (this.silent && axes.boost) this.boosting = false
     const quiet = this.silent ? 0.24 : 1
     const thrust = 62 * this.engineMul * (this.boosting ? 2.35 : 1) * quiet
@@ -1286,7 +1319,8 @@ class Game {
     shipUp(this.quat, vC)
     const coast = move > 0.04 ? 0.05 : 0.2
     this.vel.multiplyScalar(1 - dt * coast)
-    this.vel.addScaledVector(vA, axes.f * thrust * 0.9 * dt)
+    // Geri itiş ileri itişin üçte biri; geri hız gemi hız sınırının %30'unu geçmez.
+    this.vel.addScaledVector(vA, axes.f * thrust * (axes.f < 0 ? 0.32 : 0.9) * dt)
     this.vel.addScaledVector(vB, axes.s * strafe * 0.9 * dt)
     this.vel.addScaledVector(vC, axes.u * strafe * 0.9 * dt)
     if (gravity) this.pullGravity(dt)
@@ -1294,8 +1328,18 @@ class Game {
     this.applyHeat(dt)
     const cap = this.silent ? Math.min(this.speedCap(), 34) : this.speedCap()
     if (this.vel.length() > cap) this.vel.setLength(cap)
+    // Burun yönü yeniden alınır: çekim/ısı hesapları vA'yı geçici olarak kullanıyor (eskiden hız patlıyordu).
+    shipForward(this.quat, vO4)
+    const back = this.vel.dot(vO4)
+    const backCap = cap * 0.3
+    if (back < -backCap) this.vel.addScaledVector(vO4, -back - backCap)
     this.pos.addScaledVector(this.vel, dt)
     this.visual.root.position.copy(this.pos)
+    // Geri tepme: gemi gövdesi atışla bir an geri kayar, yayla yerine döner.
+    if (this.recoil > 0.001) {
+      this.visual.root.position.addScaledVector(vO4, -this.recoil * 0.7)
+      this.recoil *= Math.exp(-14 * dt)
+    }
     this.visual.root.quaternion.copy(this.quat)
 
     const firing = (this.input.mouseDown || this.input.touchFire || this.autoFire) && this.fireCd <= 0
@@ -1321,6 +1365,18 @@ class Game {
 
     this.fireCd = Math.max(0, this.fireCd - dt)
     if (firing) this.firePrimary()
+    // Çarpma kalkanı (pasif): çok yaklaşan düşmana kalkan her 0,8 sn'de bir şimşekle çarpar.
+    if (this.fighting()) {
+      this.thornT -= dt
+      if (this.thornT <= 0) {
+        this.thornT = 0.8
+        for (const e of this.enemies) {
+          if (!e.alive || e.pos.distanceTo(this.pos) > 8) continue
+          this.zap(this.pos, e.pos, 0x9adfff)
+          this.hurtEnemy(e, 3 + this.up.shield * 2)
+        }
+      }
+    }
     this.hitCd = Math.max(0, this.hitCd - dt)
     if (this.hitCd <= 0) this.shield = Math.min(this.shieldMax, this.shield + this.regenRate() * dt)
     if (this.isHome() && this.hitCd <= 0) this.hull = Math.min(this.hullMax, this.hull + 1.3 * dt)
@@ -1562,6 +1618,15 @@ class Game {
         const wave = Math.sin(t * (moving ? 6.5 : 2.2) - k * 0.95) * (moving ? 0.16 : 0.05) * (0.6 + k * 0.2)
         seg.rotation.x = (k === 0 ? flare : flare * 0.35) + wave
         seg.rotation.z = Math.sin(t * (moving ? 3.2 : 1.4) - k * 0.7) * (moving ? 0.05 : 0.02) * (k + 1) * 0.5
+      })
+    }
+    const hair = rig.root.userData.hair as Group[] | undefined
+    if (hair) {
+      // Uzun ince saç: yürürken arkaya savrulur, dururken hafifçe dalgalanır.
+      hair.forEach((h, k) => {
+        if (h.userData.hx === undefined) h.userData.hx = h.rotation.x
+        const sway = Math.sin(t * (moving ? 5.5 : 1.8) - k * 0.6) * (moving ? 0.08 : 0.03)
+        h.rotation.x = (h.userData.hx as number) + (moving ? 0.18 + Math.min(1, speed / 6) * 0.2 : 0) + sway
       })
     }
     if (rig.wiggle) {
@@ -1818,12 +1883,22 @@ class Game {
 
   /** Filonun ırkı: bu sistem bir ırkın eviyse o ırk, değilse komşu sistemlerden biri. */
   private fleetFaction(): OriginId {
+    // Bu sistemde kolonisi olan türler (kolonisi çok olan daha sık) gemi kaldırır.
+    const here: OriginId[] = []
+    for (const c of Object.values(this.colonies)) if (c && c.universe === this.universeId && !this.mine(c)) here.push(c.owner)
+    if (here.length) return here[Math.floor(Math.random() * here.length)]
     const owner = ORIGINS.find((o) => homeSystem(o.id) === this.universeId)?.id
     if (owner && owner !== this.originId) return owner
     const links = UNIVERSES[this.universeId].holes.filter((h) => h.kind === 'worm' && h.to).map((h) => h.to as UniId)
     const near = ORIGINS.filter((o) => o.id !== this.originId && links.includes(homeSystem(o.id))).map((o) => o.id)
     const pool = near.length ? near : ORIGINS.filter((o) => o.id !== this.originId).map((o) => o.id)
     return pool[Math.floor(Math.random() * pool.length)]
+  }
+
+  /** Irk gücü: genç 1, gelişmiş 1,35, kadim 1,8 (savunmacıların sayısı ve gücü, ana üs seviyesi). */
+  tierMul(o: OriginId) {
+    const t = WAR[o].tier
+    return t === 'kadim' ? 1.8 : t === 'gelişmiş' ? 1.35 : 1
   }
 
   /** Oyuncu gücü / filo gücü: gövde + silah + gemi parçaları kabaca. */
@@ -2102,6 +2177,10 @@ class Game {
 
   openDiplo() {
     if (this.mode !== 'map' && this.mode !== 'combat') return
+    if (!this.darkForestOn && !this.tutorialAt('gate')) {
+      this.toast('Diplomasi karanlık orman başlayınca açılır: önce kendi sistemini kur.')
+      return
+    }
     this.input.exitLock()
     this.renderDiplo()
     must<HTMLElement>('diplo').classList.remove('hidden')
@@ -2249,6 +2328,23 @@ class Game {
   }
 
   /** İlk görev gezegeni: ev sistemindeki, eve en yakın inilebilir komşu (Dünya için Ay). */
+  questPlanet2 = ''
+  /** İkinci eğitim gezegeni: ev sisteminde, ilkinden ve evden farklı en yakın inilebilir gezegen. */
+  private pickSecondPlanet() {
+    const home = this.planets.find((p) => p.def.home)
+    let best = ''
+    let bd = Infinity
+    for (const p of this.planets) {
+      if (p.def.home || p.def.landable === false || p.def.heat || p.def.id === this.questPlanetId) continue
+      const d = home ? p.pos.distanceTo(home.pos) : p.pos.length()
+      if (d < bd) {
+        bd = d
+        best = p.def.id
+      }
+    }
+    return best
+  }
+
   private pickFirstPlanet() {
     if (this.planets.some((p) => p.def.id === 'ay')) return 'ay'
     const home = this.planets.find((p) => p.def.home)
@@ -2280,20 +2376,19 @@ class Game {
     switch (q.id) {
       case 'fly':
       case 'land':
+      case 'clear':
+      case 'outpost':
         return { route: { kind: 'planet', id: this.questPlanetId, system: home }, name: this.planetName(this.questPlanetId, home) }
-      case 'walk':
-      case 'mine':
+      case 'orbit':
+      case 'outpost2':
+        return { route: { kind: 'planet', id: this.questPlanet2, system: home }, name: this.planetName(this.questPlanet2, home) }
       case 'silent':
       case 'scan':
       case 'meet':
         return { route: null, name: '' }
-      case 'scout': {
-        const sc = this.fleets.find((f) => f.scout)
-        const who = sc?.faction ?? this.scoutFaction()
-        return { route: null, name: `${factionName(who)} keşif gemisi` }
-      }
+      case 'walk':
+      case 'mine':
       case 'order':
-      case 'home':
       case 'fortify':
       case 'wave':
       case 'squad':
@@ -2304,19 +2399,6 @@ class Game {
         const next = UNIVERSES[this.universeId === home ? home : this.universeId].holes.find((h) => h.kind === 'worm' && h.to)?.to as UniId | undefined
         const to = this.universeId === home ? next : null
         return to ? { route: { kind: 'worm', id: to, system: to }, name: UNIVERSES[to].name } : { route: null, name: '' }
-      }
-      case 'outpost': {
-        let best: Planet | null = null
-        let bd = Infinity
-        for (const p of this.planets) {
-          if (p.def.home || p.def.landable === false || p.def.heat || this.colonies[p.def.id] || this.razed.has(p.def.id)) continue
-          const d = p.pos.distanceTo(this.pos)
-          if (d < bd) {
-            bd = d
-            best = p
-          }
-        }
-        return best ? { route: { kind: 'planet', id: best.def.id, system: this.universeId }, name: best.def.name } : { route: null, name: '' }
       }
       case 'aa':
       case 'capture': {
@@ -2359,14 +2441,20 @@ class Game {
         return this.questSilentT >= 3
       case 'scan':
         return this.questFlags.has('scan')
-      case 'scout':
-        return this.questFlags.has('scout')
+      case 'clear': {
+        const p = this.planets.find((x) => x.def.id === this.questPlanetId)
+        return Boolean(p && (this.cleared.has(p.def.id) || this.nativesLeftOf(p) <= 0 || this.colonies[p.def.id]))
+      }
+      case 'orbit':
+        return this.questFlags.has('garibanGone') || Boolean(this.colonies[this.questPlanet2])
+      case 'outpost2': {
+        const c = this.colonies[this.questPlanet2]
+        return Boolean(c && this.mine(c))
+      }
       case 'order':
         return this.questFlags.has('order')
       case 'meet':
         return this.questFlags.has('meet') || this.questFlags.has('diplo')
-      case 'home':
-        return this.layer === 'foot' && this.footPlanet?.def.id === this.homePlanetId()
       case 'fortify':
         return Boolean(homeC && (homeC.turrets.length > this.questBase.turrets || homeC.level > this.questBase.level))
       case 'wave':
@@ -2375,8 +2463,10 @@ class Game {
         return this.questFlags.has('upgrade')
       case 'gate':
         return this.universeId !== homeSystem(this.originId) || this.questFlags.has('gate')
-      case 'outpost':
-        return this.colonyCount() > this.questBase.colonies
+      case 'outpost': {
+        const c = this.colonies[this.questPlanetId]
+        return Boolean(c && this.mine(c)) || this.colonyCount() > this.questBase.colonies
+      }
       case 'squad':
         return this.questFlags.has('squad') || this.squadSize() > 0
       case 'capture':
@@ -2433,7 +2523,8 @@ class Game {
       }
     }
     if (this.quest().id === 'airdef') this.bomberT = 35
-    if (this.quest().id === 'fortify' && !this.save.settings.guide && this.testBrief && !quiet) this.tourPending = !this.tourDone
+    if (this.quest().id === 'orbit') this.ensureGaribanGuard()
+    if (this.quest().id === 'walk' && !this.save.settings.guide && this.testBrief && !quiet) this.tourPending = !this.tourDone
     if (this.quest().id === 'wave') {
       // Dalga görevi başlayınca bekletmeden ilk dalga yaklaşır.
       const homeC = this.homeColony()
@@ -2537,13 +2628,13 @@ class Game {
         this.openBriefing(i)
       } else if (!this.save.settings.guide) this.briefPending = -1
     }
-    if (this.tourPending && !this.briefing && this.layer === 'foot' && this.mode === 'map' && !this.fading && !this.encounter) {
+    if (this.tourPending && !this.briefing && this.layer === 'foot' && this.mode === 'map' && !this.fading && !this.encounter && this.footPlanet?.def.id === this.homePlanetId()) {
       this.tourPending = false
       this.coreTour()
     }
+    if (this.quest().id === 'orbit' && this.universeId === homeSystem(this.originId) && !this.fighting()) this.ensureGaribanGuard()
     if (this.layer === 'foot' && this.footSpeed > 0.5) this.questWalk += this.footSpeed * dt
     if (this.layer === 'ship' && this.silent && this.mode === 'map') this.questSilentT += dt
-    if (this.quest().id === 'scout') this.tickScout(dt)
     this.questDoneT = Math.max(0, this.questDoneT - dt)
     this.questT -= dt
     if (this.questT > 0) return
@@ -2560,6 +2651,7 @@ class Game {
       this.celebrate(`✔ ${this.questTitle(q, name)}`, `+${reward} enerji`)
       this.questDoneT = 1.6
       if (q.id === 'avlu') this.showStory('Son', EPILOGUE, 'Devam et')
+      if (q.id === 'upgrade') this.darkForest()
       this.questStart(this.questIdx + 1)
       return
     }
@@ -2602,7 +2694,7 @@ class Game {
     must<HTMLElement>('briefing').classList.add('hidden')
     this.snapCamera = true
     window.setTimeout(() => document.getElementById('quest')?.classList.remove('fresh'), 2500)
-    if (this.quest().id === 'fortify' && !this.tourDone) this.tourPending = true
+    if (this.quest().id === 'walk' && !this.tourDone) this.tourPending = true
   }
 
   /* ---------- Tanıtım çekimi: kamera bir yeri (çekirdek) dolaşır, altyazılar anlatır ---------- */
@@ -2610,8 +2702,9 @@ class Game {
   tourDone = false
   tourPending = false
 
-  startCine(at: Vector3, up: Vector3, caps: string[], radius = 16, height = 7, each = 4.2) {
+  startCine(at: Vector3, up: Vector3, caps: string[], radius = 16, height = 7, each = 4.2, title = '') {
     this.cine = { t: 0, caps, each, at: at.clone(), up: up.clone().normalize(), radius, height }
+    this.domSet('cine-title', title)
     this.input.exitLock()
     document.body.classList.add('cine-on')
     must<HTMLElement>('cine').classList.remove('hidden')
@@ -2640,7 +2733,10 @@ class Game {
       this.endCine()
       return
     }
-    if (idx !== idx0) this.domSet('cine-cap', c.caps[idx])
+    if (idx !== idx0) {
+      this.domSet('cine-cap', c.caps[idx])
+      if (idx >= 2) this.domSet('cine-title', '')
+    }
     vO1.set(1, 0, 0)
     if (Math.abs(vO1.dot(c.up)) > 0.9) vO1.set(0, 0, 1)
     vO1.addScaledVector(c.up, -vO1.dot(c.up)).normalize()
@@ -2678,6 +2774,42 @@ class Game {
     this.camera.lookAt(vO2.copy(c.at).addScaledVector(c.up, 2.5))
   }
   cineTap = false
+
+  /** Eğitimin sonu: "Karanlık orman başladı". Kamera eşiği gösterir; diğer türler ve diplomasi açılır. */
+  darkForestOn = false
+  darkForest() {
+    if (this.darkForestOn) return
+    this.darkForestOn = true
+    const worm = this.holes.find((h) => h.kind === 'worm')
+    const at = worm ? worm.pos.clone() : this.pos.clone()
+    this.audio.warning()
+    this.startCine(
+      at,
+      new Vector3(0, 1, 0),
+      [
+        'Ormandan bir ses geldi. Yalnız değilsin.',
+        'Diğer türler de seninle aynı anda büyüdü: kendi sistemlerini kolonileştirdiler, gemilerini geliştirdiler, asker bastılar.',
+        'Bu mor girdaplar eşikler: solucan delikleri. Her biri başka bir sisteme açılır; hepsi galaksinin ortasındaki dev kara deliğe, Sessiz Avlu\'ya bağlanır.',
+        'Artık seni duyabilirler. Diplomasi açıldı: tanış, ittifak kur, ticaret yap ya da savaş.',
+        'Hazır olduğunda eşikten geç ve başka sistemleri işgal etmeye başla. Harita kimin nereyi aldığını gösterir.',
+      ],
+      70,
+      24,
+      4.6,
+      'KARANLIK ORMAN BAŞLADI',
+    )
+    if (this.cine) {
+      this.cine.fresh = true
+      // Eşiğe yaklaşma, etrafında dönme, uzaklaşıp yükselme (R = 70).
+      this.cine.shots = [
+        { a0: 0, a1: 0.3, d0: 2.2, d1: 1.2, h0: 0.2, h1: 0.35, f0: 0, f1: 0 },
+        { a0: 0.3, a1: 1.3, d0: 1.2, d1: 1, h0: 0.35, h1: 0.1, f0: 0, f1: 0 },
+        { a0: 1.3, a1: 1.6, d0: 0.7, d1: 0.45, h0: 0.05, h1: -0.05, f0: 0, f1: 0 },
+        { a0: 1.6, a1: 2.4, d0: 1, d1: 1.6, h0: 0.2, h1: 0.8, f0: 0, f1: 0 },
+        { a0: 2.4, a1: 2.8, d0: 1.6, d1: 2.6, h0: 0.8, h1: 1.6, f0: 0, f1: 0 },
+      ]
+    }
+  }
 
   /** Çekirdek turu: üssün kalbini ve başka ırkların çekirdeklerini anlatır (bir kez). */
   private coreTour() {
@@ -2745,6 +2877,9 @@ class Game {
     const t = this.questTarget()
     this.domSet('q-ch', q.id === 'free' ? q.chapter : `${q.chapter} · Adım ${this.questIdx + 1}/${QUESTS.length - 1}`)
     this.domSet('q-title', this.questTitle(q, t.name))
+    this.domSet('q-num', q.id === 'free' ? '★' : String(this.questIdx + 1))
+    const prog = document.getElementById('q-prog')
+    if (prog) prog.style.width = `${Math.round((this.questIdx / Math.max(1, QUESTS.length - 1)) * 100)}%`
     let extra = ''
     if (q.id === 'walk') extra = ` (${Math.min(22, Math.floor(this.questWalk))}/22)`
     if (q.id === 'silent') extra = this.layer === 'ship' ? ` · ${this.silent ? 'süzülüyorsun' : 'V\'ye bas'} ${Math.min(3, this.questSilentT).toFixed(1)}/3 sn` : ' · önce gemine bin'
@@ -2752,9 +2887,13 @@ class Game {
       const d = this.nearestDeposit(this.footPlanet, vT)
       if (d) extra = ` · en yakın yatak ${fmt(d.distanceTo(this.pos))} m (◆ işaretini izle)`
     }
-    if (q.id === 'scout') {
-      const f = this.fleets.find((x) => x.scout)
-      if (f && this.layer === 'ship') extra = ` · uzaklık ${fmt(f.pos.distanceTo(this.pos))} · görünürlük ${Math.round(this.vis)} (35'in altında kal)`
+    if (q.id === 'clear' && this.layer === 'foot') {
+      const wild = this.locals.filter((l) => l.alive && !l.friendly).length
+      extra = wild > 0 ? ` · ${wild} Gariban kaldı · ekip ${this.squadSize()}` : ''
+    }
+    if (q.id === 'orbit') {
+      const n = this.fleets.filter((f) => f.gariban).reduce((a, f) => a + f.count, 0)
+      if (n) extra = ` · ${n} hurda gemi`
     }
     if (q.id === 'wave') {
       const hc = this.homeColony()
@@ -3017,7 +3156,7 @@ class Game {
     const planet = this.layer === 'foot' ? this.footPlanet : null
     if (planet) {
       const c = this.colonyHere(planet)
-      const shipQuest = q === 'silent' || q === 'scan' || q === 'scout' || q === 'upgrade' || q === 'gate' || q === 'meet' || q === 'avlu'
+      const shipQuest = q === 'silent' || q === 'scan' || q === 'orbit' || q === 'upgrade' || q === 'gate' || q === 'meet' || q === 'avlu' || (q === 'fly' && planet.def.home)
       if (q === 'mine') {
         const d = this.nearestDeposit(planet)
         if (d) return { pos: out.copy(d), local: true }
@@ -3025,7 +3164,7 @@ class Game {
       if ((q === 'fortify' || q === 'squad' || q === 'order' || q === 'wave') && c && this.mine(c)) {
         return { pos: this.surfacePos(this.worldDir(c.dir, planet, vQ), planet, 2, out), local: true }
       }
-      if (q === 'outpost' || q === 'capture') {
+      if (q === 'clear' || q === 'outpost' || q === 'capture') {
         let best: Vector3 | null = null
         let bd = Infinity
         for (const l of this.locals) {
@@ -3041,8 +3180,8 @@ class Game {
       }
       if (shipQuest && this.pos.distanceTo(this.parkedShip) > 10) return { pos: out.copy(this.parkedShip), local: true }
     }
-    if (this.layer === 'ship' && q === 'scout') {
-      const f = this.fleets.find((x) => x.scout)
+    if (this.layer === 'ship' && q === 'orbit') {
+      const f = this.fleets.find((x) => x.gariban)
       if (f) return { pos: out.copy(f.pos), local: true }
     }
     const w = this.waypoint()
@@ -3122,9 +3261,12 @@ class Game {
   private paintRoute() {
     const spot = this.waypoint()
     const geo = this.routeLine.geometry as BufferGeometry
-    if (!spot || this.mode !== 'map') {
+    // Hedef gezegenin üstünde yürüyorsan rota çizgisi gerekmez (yerdeki işaretler yol gösterir).
+    const onTarget = this.layer === 'foot' && this.route?.kind === 'planet' && this.route.id === this.footPlanet?.def.id
+    if (!spot || this.mode !== 'map' || onTarget) {
       this.routeLine.visible = false
       this.domSet('route-hint', '')
+      document.getElementById('gps-mark')?.classList.add('hidden')
       return
     }
     this.routeLine.visible = true
@@ -3146,6 +3288,19 @@ class Game {
       name = `${UNIVERSES[route?.system ?? this.universeId].name} (${hops} kapı) · sıradaki eşik → ${UNIVERSES[this.nextGate(this.universeId, route?.system ?? this.universeId) ?? this.universeId].name}`
     }
     this.domSet('route-hint', `Rota · ${name} · ${fmt(this.pos.distanceTo(spot))}`)
+    // GPS işareti: hedef (ya da sıradaki eşik) ekranda; ekran dışındaysa kenarda ok. Süre tahmini hızına göre.
+    const gps = document.getElementById('gps-mark')
+    if (gps) {
+      const show = this.layer === 'ship' && !this.photo && !this.cine
+      gps.classList.toggle('hidden', !show)
+      if (show) {
+        this.placeMark(gps, spot)
+        const d = this.pos.distanceTo(spot)
+        const v = Math.max(8, this.vel.length())
+        this.domSet('gps-name', name.length > 34 ? `${name.slice(0, 32)}…` : name)
+        this.domSet('gps-dist', `${fmt(d)} · ~${Math.max(1, Math.round(d / v))} sn`)
+      }
+    }
   }
 
   private paintBeacons() {
@@ -3326,7 +3481,8 @@ class Game {
     this.audio.ui()
   }
 
-  /** Tarama: 700 birim içindeki filoları ve kaynak yataklarını 10 sn gösterir; sinyalin de yükselir. */
+  /** Tarama: bütün sistemin istihbaratını (türler, koloniler, askerler, taretler, filolar) gösterir;
+   *  yakındaki filoları ve yatakları 10 sn işaretler. Bedeli: 10 sn boyunca sen de radarda parlarsın. */
   scan() {
     if (this.layer !== 'ship' || this.scanCd > 0) {
       if (this.scanCd > 0) this.toast(`Tarayıcı soğuyor: ${Math.ceil(this.scanCd)} sn`)
@@ -3343,8 +3499,9 @@ class Game {
     }
     let deposits = 0
     for (const p of this.planets) if (p.pos.distanceTo(this.pos) < SCAN_RANGE + p.def.radius) deposits += this.depositsLeft(p)
-    const names = [...new Set(near.map((f) => (f.faction ? factionName(f.faction) : 'Bilinmeyen')))]
-    this.toast(near.length ? `Tarama: ${near.length} filo (${names.join(', ')}) · ${deposits} kaynak yatağı` : `Tarama: menzilde filo yok · ${deposits} kaynak yatağı`)
+    // Bedel: 10 sn boyunca sen de radarda parlarsın (görünürlük yüksek kalır).
+    this.exposedT = 10
+    this.showScanReport(deposits, near.length)
     this.questEvent('scan')
     this.audio.scan()
     if (!this.scanFx) {
@@ -3356,7 +3513,63 @@ class Game {
     this.scanFx.visible = true
   }
 
+  exposedT = 0
+  private scanPanelT = 0
+
+  /** Tarama raporu: bu sistemde Garibanlar dışında kaç tür var; kolonileri, tahmini askerleri, taretleri, filoları. */
+  private showScanReport(deposits: number, nearFleets: number) {
+    const el = document.getElementById('scan-panel')
+    if (!el) return
+    type Row = { colonies: number; soldiers: number; kara: number; hava: number; fleets: number; ships: number }
+    const rows = new Map<OriginId, Row>()
+    const row = (o: OriginId) => {
+      let r = rows.get(o)
+      if (!r) {
+        r = { colonies: 0, soldiers: 0, kara: 0, hava: 0, fleets: 0, ships: 0 }
+        rows.set(o, r)
+      }
+      return r
+    }
+    for (const c of Object.values(this.colonies)) {
+      if (!c || c.universe !== this.universeId) continue
+      const r = row(c.owner)
+      r.colonies++
+      r.soldiers += Math.floor(Math.min(c.pop, this.capOf(c)))
+      for (const t of c.turrets) if (t.alive) t.kind === 'hava' ? r.hava++ : r.kara++
+    }
+    for (const f of this.fleets) {
+      if (!f.faction || f.gariban) continue
+      const r = row(f.faction)
+      r.fleets++
+      r.ships += f.count
+      if (f.faction) this.relOf(f.faction).known = true
+    }
+    const wild = this.planets.filter((p) => !p.def.home && !p.def.heat && p.def.landable !== false && !this.colonies[p.def.id] && !this.cleared.has(p.def.id)).length
+    const others = [...rows.keys()].filter((o) => o !== this.originId)
+    const lines = [`<h4>Tarama · ${UNIVERSES[this.universeId].name}</h4>`, `<div>${others.length ? `${others.length} yabancı tür` : 'Yabancı tür yok'} · ${wild} Gariban gezegeni · ${deposits} yatak yakında</div>`]
+    for (const [o, r] of [...rows.entries()].sort((a, b) => Number(a[0] === this.originId) - Number(b[0] === this.originId))) {
+      const name = o === this.originId ? 'Sen' : factionName(o)
+      lines.push(
+        `<div class="sr"><span class="sw" style="background:${this.ownerColor(o)}"></span><b>${name}</b></div><div class="sx">${r.colonies} koloni · ~${r.soldiers} asker · ◈ ${r.kara} kara · ✈ ${r.hava} hava taret · ${r.fleets} filo (${r.ships} gemi)</div>`,
+      )
+    }
+    lines.push(`<div class="warn">⚠ 10 sn boyunca sen de radarda görünüyorsun${nearFleets ? ` · yakında ${nearFleets} filo` : ''}.</div>`)
+    el.innerHTML = lines.join('')
+    el.classList.remove('hidden')
+    document.body.classList.add('scan-on')
+    this.scanPanelT = 10
+  }
+
   private tickScan(dt: number) {
+    this.exposedT = Math.max(0, this.exposedT - dt)
+    if (this.exposedT > 0) this.vis = Math.max(this.vis, 60)
+    if (this.scanPanelT > 0) {
+      this.scanPanelT -= dt
+      if (this.scanPanelT <= 0) {
+        document.getElementById('scan-panel')?.classList.add('hidden')
+        document.body.classList.remove('scan-on')
+      }
+    }
     this.scanCd = Math.max(0, this.scanCd - dt)
     this.scanT = Math.max(0, this.scanT - dt)
     for (const f of this.fleets) if (f.revealed) f.revealed = Math.max(0, f.revealed - dt)
@@ -3454,6 +3667,20 @@ class Game {
     const aim = this.fleetAim()
     for (let i = this.fleets.length - 1; i >= 0; i--) {
       const fleet = this.fleets[i]
+      if (fleet.gariban) {
+        const gp = this.planets.find((p) => p.def.id === fleet.gariban)
+        if (gp) {
+          fleet.angle += worldDt * 0.25
+          const R = gp.def.radius + 40
+          fleet.pos.set(Math.cos(fleet.angle) * R, 14, Math.sin(fleet.angle) * R).add(gp.pos)
+          fleet.root.position.copy(fleet.pos)
+        }
+        if (fleet.pos.distanceTo(this.pos) < 55 && this.mode === 'map' && this.layer === 'ship' && !this.fading) {
+          this.beginCombat(fleet)
+          return
+        }
+        continue
+      }
       if (fleet.bomber) {
         // Akıncı kendi yolunda (bomberTick); yalnız gemiyle yaklaşınca çatışma başlar.
         if (fleet.pos.distanceTo(this.pos) < 30 && this.mode === 'map' && this.layer === 'ship' && !this.fading) {
@@ -3629,7 +3856,8 @@ class Game {
       if (!well.alive) continue
       vO4.subVectors(e.pos, well.pos)
       const wd = vO4.length()
-      if (wd < 30 && wd > 0.01) vD.addScaledVector(vO4.normalize(), ((30 - wd) / 30) * 3.2)
+      // Kendi tarafının kara deliğini görür: 45 birimden itibaren dümen kırar, yakınsa tam gaz uzaklaşır.
+      if (wd < 45 && wd > 0.01) vD.addScaledVector(vO4.normalize(), ((45 - wd) / 45) * 6)
     }
     if (vD.lengthSq() < 1e-6) vD.copy(vB)
     vD.normalize()
@@ -3727,6 +3955,8 @@ class Game {
       vG.normalize()
       this.spawnShot(false, e.pos, vG, dmg, e.attack === 'homing' || e.attack === 'goo' ? e.attack : 'bolt')
     }
+    // Düşman atışı da görünür: namlu ışığı (ırk renginde).
+    this.fx.flash(e.pos, this.combatFaction ? WAR[this.combatFaction].color : 0xff6a4a, e.giant ? 3 : 1.6, 0.08)
     this.audio.laser(true)
   }
 
@@ -3737,10 +3967,13 @@ class Game {
     if (vA.lengthSq() < 1) vA.set(0, 0, -1)
     vA.normalize()
     slot.owner = e
-    slot.pos.copy(e.pos).addScaledVector(vA, 18)
+    // Kara delik sana yakın açılır (12 birim önünde), kendi filosundan uzakta: amiral gemisi kendi tuzağına koşmaz.
+    const gap = e.pos.distanceTo(this.pos)
+    slot.pos.copy(e.pos).addScaledVector(vA, Math.max(18, gap - 12))
     slot.life = 4.5
     this.toast(`⚠ ${this.combatFaction ? factionName(this.combatFaction) : 'Amiral'} kara delik açtı! Olay ufkuna düşen parçalanır — uzaklaş.`)
     slot.alive = true
+    slot.size = 1
     slot.mesh.visible = true
     slot.mesh.position.copy(slot.pos)
     this.audio.warning()
@@ -3753,15 +3986,22 @@ class Game {
       shot.pos.addScaledVector(shot.vel, dt)
       shot.age += dt
       // Roket ve güdümlü füzeler arkasında duman izi bırakır.
-      if ((shot.kind === 'rocket' || shot.kind === 'homing') && Math.floor(shot.age / 0.05) !== Math.floor((shot.age - dt) / 0.05)) {
-        this.fx.puff(shot.prev, shot.friendly ? 0x8a8680 : 0x6a4a44, 1, 0.9, 0.9)
-        this.fx.flash(shot.prev, 0xffa040, 0.9, 0.08)
+      if ((shot.kind === 'rocket' || shot.kind === 'homing' || shot.kind === 'flak') && Math.floor(shot.age / 0.035) !== Math.floor((shot.age - dt) / 0.035)) {
+        // Füze: koyu duman izi + alev çekirdeği; flak: kısa sıcak iz.
+        if (shot.kind !== 'flak') this.fx.puff(shot.prev, shot.friendly ? 0x8a8680 : 0x6a4a44, 1, 1.2, 1.1)
+        this.fx.flash(shot.prev, shot.kind === 'flak' ? 0xff9a50 : 0xffa040, shot.kind === 'flak' ? 0.8 : 1.4, 0.07)
       }
       if (shot.kind === 'rocket' || (!shot.friendly && (shot.kind === 'homing' || shot.kind === 'goo'))) {
         let target: Enemy | null = null
         if (shot.friendly) {
           let bestD = 240
+          // Güdümlü roket önce kilitli hedefe gider.
+          if (this.lockOn && this.pickedTarget?.alive) {
+            target = this.pickedTarget
+            bestD = -1
+          }
           for (const e of this.enemies) {
+            if (bestD < 0) break
             if (!e.alive) continue
             const d = e.pos.distanceTo(shot.pos)
             if (d < bestD) {
@@ -3775,15 +4015,17 @@ class Game {
         else vB.set(0, 0, 0)
         if (vB.lengthSq() > 1) {
           vB.normalize()
-          const steer = shot.kind === 'goo' ? 26 : shot.kind === 'rocket' ? 36 : 48
+          const steer = shot.kind === 'goo' ? 26 : shot.kind === 'rocket' ? 90 : 48
           shot.vel.addScaledVector(vB, steer * dt)
-          const cap = shot.kind === 'goo' ? 46 : shot.kind === 'rocket' ? 84 : 96
+          const cap = shot.kind === 'goo' ? 46 : shot.kind === 'rocket' ? 170 : 96
           if (shot.vel.length() > cap) shot.vel.setLength(cap)
         }
       }
       shot.mesh.position.copy(shot.pos)
       if (shot.vel.lengthSq() > 0.01) shot.mesh.lookAt(vA.copy(shot.pos).add(shot.vel))
-      const life = shot.kind === 'goo' ? 3.5 : shot.kind === 'homing' || shot.kind === 'rocket' ? 2.6 : shot.kind === 'pellet' ? 0.62 : shot.kind === 'laser' || shot.kind === 'chain' ? 0.72 : shot.kind === 'plasma' ? 1.5 : 1.45
+      // Menziller: oyuncunun silahları ~130–260 birim; taretlerin flak mermisi ~350 (taret seni önce vurur).
+      const life =
+        shot.kind === 'goo' ? 3.5 : shot.kind === 'flak' ? 1.55 : shot.kind === 'homing' ? 2.6 : shot.kind === 'rocket' ? 1.6 : shot.kind === 'pellet' ? 0.55 : shot.kind === 'laser' || shot.kind === 'chain' ? 0.62 : shot.kind === 'plasma' ? 1.1 : 1.45
       if (shot.age > life) {
         this.killShot(shot)
         continue
@@ -3822,13 +4064,18 @@ class Game {
           this.hurtEnemy(hit, shot.dmg * (weak ? 2.7 : 1))
           this.impactFx(shot.kind, hit.pos, shot.pos)
           if (shot.kind === 'rocket') {
-            // Roket patlar: çevresindekilere de hasar.
+            // Roket büyük patlar: ateş topu + çevresindekilere de hasar.
+            this.fx.shipBlast(shot.pos, 1.1, 0xff8a3a)
+            this.fx.wave(shot.pos, 0xffb070, 14, 0.5)
+            this.trauma = Math.min(0.6, this.trauma + 0.12)
             for (const other of this.enemies) {
               if (!other.alive || other === hit) continue
-              if (other.pos.distanceTo(hit.pos) < 9) this.hurtEnemy(other, shot.dmg * 0.55)
+              if (other.pos.distanceTo(hit.pos) < 12) this.hurtEnemy(other, shot.dmg * 0.6)
             }
           }
           if (shot.kind === 'plasma') {
+            this.fx.flash(shot.pos, 0x9affd0, 5, 0.3)
+            this.fx.puff(shot.pos, 0x6affb0, 5, 1.6, 0.7, undefined, true)
             const splash = this.originId === 'gliese' ? 8 : 6
             for (const other of this.enemies) {
               if (!other.alive || other === hit) continue
@@ -3857,7 +4104,13 @@ class Game {
           }
           this.killShot(shot)
         }
-      } else if (!shot.friendly && distPointSeg(this.pos, shot.prev, shot.pos) < (shot.kind === 'goo' ? 2.3 : 1.85)) {
+      } else if (!shot.friendly && distPointSeg(this.pos, shot.prev, shot.pos) < (shot.kind === 'goo' ? 2.3 : shot.kind === 'flak' ? 3.6 : 1.85)) {
+        if (shot.kind === 'flak') {
+          // Flak yakınında patlar: şarapnel bulutu.
+          this.fx.flash(shot.pos, 0xffb060, 4, 0.18)
+          this.fx.puff(shot.pos, 0x4a4440, 6, 1.6, 0.9)
+          this.sparks.burst(shot.pos, 0xffc070, 10, 9, 0.5)
+        }
         this.hurtPlayer(shot.dmg)
         if (shot.kind === 'goo') this.vel.multiplyScalar(0.62)
         this.killShot(shot)
@@ -3928,9 +4181,12 @@ class Game {
     if (e.hull <= 0) {
       e.alive = false
       e.root.visible = false
-      this.spawnBoom(e.pos, 1.15, 0xff6644)
-      this.fx.explosion(e.pos, 0xff7a3a, e.giant ? 3 : 1.6)
+      this.spawnBoom(e.pos, e.giant ? 2.4 : 1.4, 0xff6644)
+      this.fx.shipBlast(e.pos, e.giant ? 3.6 : e.small ? 1.3 : 2)
+      // Yakındaki düşmanlar patlamadan pay alır (zincirleme patlamalar).
+      for (const o of this.enemies) if (o !== e && o.alive && o.pos.distanceTo(e.pos) < (e.giant ? 14 : 7)) this.hurtEnemy(o, e.giant ? 30 : 10)
       this.dropLoot(e.pos, e.small ? 12 : Math.round((14 + e.threat * 6) * (e.giant ? 2.5 : 1)), e.small ? 2 : e.giant ? 6 : 3)
+      if (this.combatFaction && !e.human) this.crewFall(e.pos, this.combatFaction, e.small ? 1 : e.giant ? 4 : 2)
       this.kills++
       this.addScore(45)
       this.audio.boom()
@@ -4010,7 +4266,7 @@ class Game {
       this.camera.lookAt(vE)
     }
     this.snapCamera = false
-    const targetFov = clamp(62 + this.vel.length() * 0.03 + (this.boosting ? 2 : 0) + this.trauma * 2, 62, 72)
+    const targetFov = clamp(62 + this.vel.length() * 0.03 + (this.boosting ? 2 : 0) + this.trauma * 2 + this.recoil * 3, 62, 74)
     this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.exp(-6 * dt))
     this.camera.updateProjectionMatrix()
     if (this.trauma > 0) {
@@ -4173,13 +4429,16 @@ class Game {
       const land = this.layer === 'ship' ? this.nearestLandable() : null
       if (this.layer === 'foot' && this.footPlanet) {
         prompt = this.footPrompt()
+      } else if (this.fighting() && this.layer === 'ship') {
+        const rapid = this.weapon === 'laser' || this.weapon === 'spread' || this.weapon === 'chain'
+        prompt = this.lockOn ? `F — kilidi bırak · Tab — sıradaki hedef${rapid ? ' · seri silah kendi nişan alır' : ''}` : 'F — hedefe kilitlen · Tab — hedef seç · B — kaçınma taklası'
       } else if (lethal) prompt = 'Olay ufkuna çok yakınsın'
       else if (throat?.to) prompt = `Eşik → ${UNIVERSES[throat.to].name}`
       else if (land) {
         const lc = this.colonies[land.def.id]
         prompt = lc && lc.universe === this.universeId && this.mine(lc) ? `L — buraya in · Shift+L — üsse in · ${land.def.name}` : `L — in · ${land.def.name}`
       }
-      else if (near && near.fleet.state !== 'leave') prompt = near.dist < 48 ? 'F — kapış · çok yakın' : 'F — kapış'
+      else if (near && near.fleet.state !== 'leave') prompt = near.dist < 48 ? 'F — çatışmaya gir (saldır) · çok yakın' : 'F — çatışmaya gir (saldır)'
     }
     const names = this.holes.filter((h) => h.kind === 'worm' && h.to).map((h) => UNIVERSES[h.to as UniId].name)
     const home = UNIVERSES[homeSystem(this.originId)]
@@ -4518,6 +4777,7 @@ class Game {
     this.combatThreat = Math.max(this.combatThreat, fleet.threat)
     const at = fleet.pos.clone()
     if (fleet.scout) this.scoutFight = true
+    this.garibanFight = Boolean(fleet.gariban)
     const small = Boolean(fleet.small)
     if (small) this.homePatrols = Math.max(0, this.homePatrols - 1)
     this.removeFleet(fleet)
@@ -4537,9 +4797,63 @@ class Game {
   }
 
   /** Yerinde savaşın güncellemesi (harita modunda çalışır). */
+  /** Düşman ırk da kendi yeteneğini kullanır (uzayda: ırk renginde şok dalgası; yerde: kahramanı yeteneğini patlatır). */
+  private foeSkillT = 9
+  private foeSkillSpace(dt: number) {
+    const fac = this.combatFaction
+    if (!fac) return
+    this.foeSkillT -= dt
+    if (this.foeSkillT > 0) return
+    this.foeSkillT = 13 + Math.random() * 6
+    const alive = this.enemies.filter((e) => e.alive)
+    if (!alive.length) return
+    const caster = alive.find((e) => e.giant) ?? alive[Math.floor(Math.random() * alive.length)]
+    const sk = skillOf(fac)
+    const R = 34
+    this.fx.wave(caster.pos, sk.color, R, 0.9)
+    this.fx.flash(caster.pos, sk.color, 10, 0.4)
+    this.fx.ring(caster.pos, new Vector3(0, 1, 0), sk.color, R, 0.8, 0.06)
+    this.audio.sweep(180, 700, 0.5, 'sawtooth', 0.06)
+    this.toast(`${factionName(fac)}: ${sk.name}!`)
+    if (this.pos.distanceTo(caster.pos) < R && this.layer === 'ship') this.hurtPlayer(10 + 8 * this.tierMul(fac))
+    for (let i = this.escorts.length - 1; i >= 0; i--) {
+      const es = this.escorts[i]
+      if (es.position.distanceTo(caster.pos) > R) continue
+      es.userData.hull = ((es.userData.hull as number) ?? 70) - 18
+      if ((es.userData.hull as number) <= 0) this.loseEscort(i, 'Eşlik gemin düşmanın yeteneğiyle düştü.')
+    }
+  }
+
+  private foeGroundT = 12
+  /** Yerde düşman üssünün kahramanı ırk yeteneğini kullanır: oyuncuya ve ekibe alan hasarı. */
+  private foeSkillGround(planet: Planet, c: Colony | null, dt: number) {
+    if (!c || this.mine(c)) return
+    this.foeGroundT -= dt
+    if (this.foeGroundT > 0) return
+    this.foeGroundT = 15 + Math.random() * 8
+    const hero = this.units.find((u) => u.alive && !u.squad && u.colonyId === c.planetId && isHero(u.kind))
+    if (!hero) return
+    const sk = skillOf(c.owner)
+    const R = Math.max(10, sk.radius || 12)
+    const at = hero.root.position
+    const up = hero.dir.clone()
+    this.fx.ring(at, up, sk.color, R, 0.9, 0.08)
+    this.fx.column(at, up, sk.color, 10, 1.6, 0.8)
+    this.fx.cracks(at, up, sk.color, R * 0.8, 1.4)
+    this.audio.sweep(140, 520, 0.5, 'sawtooth', 0.07)
+    this.toast(`${factionName(c.owner)} kahramanı: ${sk.name}!`)
+    const dmg = Math.round((sk.dmg || 20) * 0.5 * this.tierMul(c.owner))
+    if (this.pos.distanceTo(at) < R + 2) this.footHurt(dmg)
+    for (const u of this.units) {
+      if (!u.alive || !u.squad || u.root.position.distanceTo(at) > R) continue
+      this.hitUnit(u, dmg, hero.dir, planet, false, 'unit', factionName(c.owner))
+    }
+  }
+
   private updateSkirmish(dt: number) {
     if (!this.enemies.length) return
     this.combatTime += dt
+    this.foeSkillSpace(dt)
     let alive = 0
     let near = Infinity
     vA.set(0, 0, 0)
@@ -4548,7 +4862,14 @@ class Game {
       if (!e.alive) continue
       alive++
       vA.add(e.pos)
-      near = Math.min(near, e.pos.distanceTo(this.pos))
+      const d = e.pos.distanceTo(this.pos)
+      near = Math.min(near, d)
+      // Kaçmak kolay olmasın: uzaklaşana takip hamlesi (yakında normal dövüş).
+      if (d > 120) {
+        vB.subVectors(this.pos, e.pos).normalize()
+        e.vel.addScaledVector(vB, (e.small ? 30 : 55) * dt)
+        if (e.vel.length() > 120) e.vel.setLength(120)
+      }
     }
     this.updateGates(dt)
     if (!alive) {
@@ -4556,7 +4877,7 @@ class Game {
       return
     }
     // Çok uzaklaşırsan savaş biter; kalanlar yeniden filo olur ve iz sürer.
-    if (near > 260) {
+    if (near > 420) {
       vA.multiplyScalar(1 / alive)
       const left = this.enemies.filter((e) => e.alive)
       const small = left.every((e) => e.small)
@@ -4681,6 +5002,15 @@ class Game {
     this.addScore(40 + this.combatCount * 20)
     this.vis = Math.min(this.vis, 34)
     this.grace = 3
+    if (this.garibanFight) {
+      this.garibanFight = false
+      this.questEvent('garibanGone')
+      if (this.questPlanet2) {
+        this.cleared.add(this.questPlanet2)
+        this.nativesLeft.set(this.questPlanet2, 0)
+      }
+      this.toast('Hurda gemiler düştü; yerdeki Garibanlar korkup kaçtı. İn ve karakolunu kur.')
+    }
     if (this.scoutFight) {
       this.scoutFight = false
       this.questEvent('scout')
@@ -4744,9 +5074,24 @@ class Game {
     this.fadeTo(() => {
       this.resetRun()
       this.mode = 'map'
+      // Oyun evde, yayayken başlar: önce evini tanı, sonra gemine bin. Rehber kapalıysa (deneyimli oyuncu) yörüngede başlar.
+      if (this.save.settings.guide && this.testGates !== false) this.startAtHome()
       this.snapCamera = true
       this.input.requestLock()
     })
+  }
+
+  /** Ev gezegeninde, çekirdeğin yanında yere indir (gemi yanında park eder). */
+  private startAtHome() {
+    const planet = this.planets.find((p) => p.def.id === this.homePlanetId())
+    const c = planet ? this.colonies[planet.def.id] : null
+    if (!planet || !c) return
+    const up = this.worldDir(c.dir, planet, new Vector3())
+    this.pos.copy(planet.pos).addScaledVector(up, planet.def.radius + 30)
+    this.vel.set(0, 0, 0)
+    quatFromForward(this.quat, up.clone().negate())
+    this.layer = 'ship'
+    this.land(true)
   }
 
   private resetRun() {
@@ -4760,6 +5105,7 @@ class Game {
     this.stranded = []
     this.tourDone = false
     this.avluSeen = false
+    this.darkForestOn = false
     this.mined.clear()
     this.regrow.clear()
     this.botT = 40
@@ -4826,6 +5172,7 @@ class Game {
     this.discovered = []
     this.route = null
     this.questPlanetId = this.pickFirstPlanet()
+    this.questPlanet2 = this.pickSecondPlanet()
     this.tipsOn = false
     this.hull = this.hullMax
     this.shield = this.shieldMax
@@ -4989,7 +5336,7 @@ class Game {
       squad: [...this.squad, ...this.units.filter((u) => u.alive && u.squad).map((u) => ({ kind: u.kind as SettlerKind, hull: u.hull, hullMax: u.hullMax }))],
       stranded: this.stranded.map((x) => ({ planetId: x.planetId, universe: x.universe, dir: this.v3(x.dir), crew: x.crew })),
       lastTalk: {},
-      flags: { tour: this.tourDone, avlu: this.avluSeen },
+      flags: { tour: this.tourDone, avlu: this.avluSeen, df: this.darkForestOn },
     }
   }
 
@@ -5085,6 +5432,7 @@ class Game {
     this.captured = g.captured
     this.tourDone = Boolean(g.flags?.tour)
     this.avluSeen = Boolean(g.flags?.avlu)
+    this.darkForestOn = Boolean(g.flags?.df)
     this.questStart(g.questIdx, true)
     this.briefPending = -1
     this.briefing = false
@@ -5462,6 +5810,24 @@ class Game {
       poi.getWorldPosition(vA)
       poi.visible = this.pos.distanceTo(vA) < Math.max(520, (poi.parent?.scale.x ?? 0) * 2)
     }
+    // Üs garnizonu yörüngeden görünür (yayayken gerçek askerler var); sayısı nüfusa göre.
+    for (const c of Object.values(this.colonies)) {
+      if (!c?.root || c.universe !== this.universeId) continue
+      const planet = this.planetOf(c)
+      if (!planet) continue
+      const show = this.layer === 'ship' && this.pos.distanceTo(planet.pos) < Math.max(420, planet.def.radius * 4)
+      let g = c.root.userData.garrison as Group | undefined
+      if (!g && show) g = this.buildGarrisonShow(c, planet, c.root)
+      if (!g) continue
+      g.visible = show
+      if (!show) continue
+      const n = Math.min(6, Math.floor(c.pop))
+      const rigs = (g.userData.rigs as Rig[] | undefined) ?? []
+      for (let ri = 0; ri < rigs.length; ri++) {
+        rigs[ri].root.visible = ri < n
+        if (ri < n) this.stepRig(rigs[ri], 0, false, 0)
+      }
+    }
     // Köy figürleri yalnız yörüngeden görülen yaşam izidir: yüzeye inince gerçek yerliler doğar,
     // gezegen temizlenince ya da üs kurulunca kaybolurlar. Vurulamayan, donmuş yerli kalmaz.
     for (const planet of this.planets) {
@@ -5672,6 +6038,7 @@ class Game {
       // Irk rengi: hangi ırkla dövüştüğün gemilerden anlaşılır.
       if (prof && !human && !raceShip) visual.bodyMat.color.set(prof.color)
       if (this.universeId === 'kizil' && !human && !prof) visual.bodyMat.color.set(0x6a2418)
+      if (this.garibanFight && !human) visual.bodyMat.color.set(0x7a8a6a)
       if (this.universeId === 'soluk' && !human) visual.bodyMat.emissive.set(0x123a4a)
       let weak: Mesh | null = null
       let bar: Sprite | null = null
@@ -5746,6 +6113,7 @@ class Game {
       if (e.root.userData.ownGeo) e.root.traverse((o) => (o as Mesh).geometry?.dispose())
     }
     this.enemies.length = 0
+    this.lockOn = false
     this.skirmish = false
     for (const gate of this.enemyGates) {
       gate.alive = false
@@ -5773,10 +6141,11 @@ class Game {
     else if (kind === 'homing' || kind === 'rocket') shot.mesh.scale.set(0.7, 0.7, 2.1)
     else if (kind === 'plasma') shot.mesh.scale.set(1.25, 1.25, 1.25)
     else if (kind === 'pellet') shot.mesh.scale.set(0.42, 0.42, 0.42)
-    else if (kind === 'laser' || kind === 'chain') shot.mesh.scale.set(0.12, 0.12, 3.1)
+    else if (kind === 'laser' || kind === 'chain') shot.mesh.scale.set(0.16, 0.16, 4.2)
+    else if (kind === 'flak') shot.mesh.scale.set(1.6, 1.6, 2.6)
     else shot.mesh.scale.set(1.35, 1.35, 1.6)
     const speed =
-      kind === 'laser' || kind === 'chain' ? 340 : kind === 'pellet' ? 230 : kind === 'rocket' ? (friendly ? 150 : 74) : kind === 'plasma' ? (friendly ? 200 : 102) : kind === 'goo' ? 38 : kind === 'homing' ? 82 : friendly ? 260 : 128
+      kind === 'flak' ? 230 : kind === 'laser' || kind === 'chain' ? 340 : kind === 'pellet' ? 230 : kind === 'rocket' ? (friendly ? 150 : 74) : kind === 'plasma' ? (friendly ? 200 : 102) : kind === 'goo' ? 38 : kind === 'homing' ? 82 : friendly ? 260 : 128
     shot.vel.set(dx, dy, dz).multiplyScalar(speed)
     shot.pos.set(ox + dx * 1.6, oy + dy * 1.6, oz + dz * 1.6)
     shot.prev.copy(shot.pos)
@@ -5937,16 +6306,22 @@ class Game {
   static readonly NET_LAYOUT: Record<UniId, [number, number]> = {
     gunes: [0.08, 0.27],
     marskol: [0.08, 0.73],
-    avlu: [0.23, 0.5],
-    alpha: [0.38, 0.17],
-    proxima: [0.38, 0.83],
-    kizil: [0.5, 0.5],
-    k218: [0.62, 0.17],
-    kepler186: [0.62, 0.83],
-    trappist: [0.75, 0.33],
-    soluk: [0.75, 0.67],
-    gliese: [0.88, 0.3],
-    kepler452: [0.92, 0.7],
+    kizil: [0.24, 0.5],
+    avlu: [0.5, 0.5],
+    alpha: [0.36, 0.14],
+    proxima: [0.36, 0.86],
+    k218: [0.64, 0.14],
+    kepler186: [0.64, 0.86],
+    trappist: [0.78, 0.33],
+    soluk: [0.78, 0.67],
+    gliese: [0.92, 0.28],
+    kepler452: [0.92, 0.72],
+  }
+
+  /** Sahiplik rengi: oyuncu yeşil, ırklar kendi savaş rengi. */
+  ownerColor(o: OriginId) {
+    if (o === this.originId) return '#7dff8a'
+    return `#${WAR[o].color.toString(16).padStart(6, '0')}`
   }
 
   private routePath(): UniId[] {
@@ -5977,6 +6352,35 @@ class Game {
       return false
     }
     const ids = Object.keys(UNIVERSES) as UniId[]
+    // Ortadaki dev kara delik: Sessiz Avlu.
+    {
+      const [x, y] = at('avlu')
+      const t = performance.now() / 1000
+      const g = ctx.createRadialGradient(x, y, 10, x, y, 120)
+      g.addColorStop(0, 'rgba(0,0,0,1)')
+      g.addColorStop(0.32, 'rgba(0,0,0,1)')
+      g.addColorStop(0.36, 'rgba(255,200,120,0.95)')
+      g.addColorStop(0.5, 'rgba(255,120,40,0.45)')
+      g.addColorStop(1, 'rgba(255,90,20,0)')
+      ctx.fillStyle = g
+      ctx.beginPath()
+      ctx.arc(x, y, 120, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.save()
+      ctx.translate(x, y)
+      ctx.rotate(t * 0.2)
+      ctx.scale(1, 0.32)
+      ctx.strokeStyle = 'rgba(255,210,150,0.75)'
+      ctx.lineWidth = 6
+      ctx.beginPath()
+      ctx.arc(0, 0, 92, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.restore()
+      ctx.fillStyle = '#000'
+      ctx.beginPath()
+      ctx.arc(x, y, 36, 0, Math.PI * 2)
+      ctx.fill()
+    }
     ctx.lineCap = 'round'
     for (const a of ids) {
       for (const h of UNIVERSES[a].holes) {
@@ -5984,42 +6388,105 @@ class Game {
         const [x1, y1] = at(a)
         const [x2, y2] = at(h.to)
         const hot = onPath(a, h.to)
-        ctx.strokeStyle = hot ? '#ffe27a' : 'rgba(122,215,255,0.35)'
+        ctx.strokeStyle = hot ? '#ffe27a' : 'rgba(170,130,255,0.35)'
         ctx.lineWidth = hot ? 7 : 3
+        ctx.setLineDash(hot ? [] : [10, 8])
         ctx.beginPath()
         ctx.moveTo(x1, y1)
         ctx.lineTo(x2, y2)
         ctx.stroke()
       }
     }
+    ctx.setLineDash([])
+    // Sahiplik: her sistemde kimin kaç kolonisi var (halka dilimleri ırk renginde).
+    const owners = new Map<UniId, Map<OriginId, number>>()
+    for (const c of Object.values(this.colonies)) {
+      if (!c) continue
+      const m = owners.get(c.universe) ?? new Map<OriginId, number>()
+      m.set(c.owner, (m.get(c.owner) ?? 0) + 1)
+      owners.set(c.universe, m)
+    }
     const home = homeSystem(this.originId)
-    const owner = new Map<UniId, OriginId>()
-    for (const o of ORIGINS) owner.set(homeSystem(o.id), o.id)
     ctx.textAlign = 'center'
     for (const id of ids) {
+      if (id === 'avlu') continue
       const [x, y] = at(id)
       const here = id === this.universeId
-      const mine = id === home
-      const race = owner.get(id)
-      ctx.fillStyle = here ? '#ffe27a' : mine ? '#7dff8a' : race ? '#e4a15c' : '#8a93a6'
+      const R = here ? 30 : 25
+      const m = owners.get(id)
+      const total = m ? [...m.values()].reduce((a, b) => a + b, 0) : 0
+      ctx.fillStyle = 'rgba(20,24,32,0.95)'
       ctx.beginPath()
-      ctx.arc(x, y, here ? 20 : 15, 0, Math.PI * 2)
+      ctx.arc(x, y, R, 0, Math.PI * 2)
       ctx.fill()
+      if (m && total) {
+        let a0 = -Math.PI / 2
+        // En çok koloniye sahip olan ortayı boyar.
+        const top = [...m.entries()].sort((p, q) => q[1] - p[1])[0][0]
+        ctx.fillStyle = this.ownerColor(top)
+        ctx.globalAlpha = 0.35
+        ctx.beginPath()
+        ctx.arc(x, y, R - 6, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.globalAlpha = 1
+        for (const [o, n] of m) {
+          const a1 = a0 + (n / total) * Math.PI * 2
+          ctx.strokeStyle = this.ownerColor(o)
+          ctx.lineWidth = 9
+          ctx.beginPath()
+          ctx.arc(x, y, R, a0, a1)
+          ctx.stroke()
+          a0 = a1
+        }
+      } else {
+        ctx.strokeStyle = 'rgba(140,150,166,0.6)'
+        ctx.lineWidth = 3
+        ctx.beginPath()
+        ctx.arc(x, y, R, 0, Math.PI * 2)
+        ctx.stroke()
+      }
       if (here) {
         ctx.strokeStyle = '#ffffff'
         ctx.lineWidth = 3
+        ctx.beginPath()
+        ctx.arc(x, y, R + 9, 0, Math.PI * 2)
         ctx.stroke()
       }
       ctx.fillStyle = '#f3ead8'
-      ctx.font = `${here || mine ? 'bold ' : ''}26px sans-serif`
-      ctx.fillText(`${mine ? '⌂ ' : ''}${UNIVERSES[id].name}`, x, y - 28)
-      ctx.font = '20px sans-serif'
+      ctx.font = `${here || id === home ? 'bold ' : ''}24px sans-serif`
+      ctx.fillText(`${id === home ? '⌂ ' : ''}${UNIVERSES[id].name}`, x, y - R - 12)
+      ctx.font = '19px sans-serif'
       ctx.fillStyle = '#c9b89a'
-      const tag = race ? originLook(race).name : 'ara bölge'
-      ctx.fillText(tag, x, y + 40)
+      ctx.fillText(total ? `${total} koloni` : 'boş · Garibanlar', x, y + R + 24)
+      if (here) {
+        ctx.fillStyle = '#ffe27a'
+        ctx.fillText('buradasın', x, y + 7)
+      }
+    }
+    {
+      const [x, y] = at('avlu')
+      ctx.fillStyle = '#ffe2b0'
+      ctx.font = 'bold 24px sans-serif'
+      ctx.fillText('Sessiz Avlu', x, y + 150)
+      ctx.font = '18px sans-serif'
+      ctx.fillStyle = '#c9b89a'
+      ctx.fillText('galaksinin kalbi · dev kara delik', x, y + 174)
+    }
+    // Lejant: ırk renkleri.
+    ctx.textAlign = 'left'
+    ctx.font = '17px sans-serif'
+    let lx = 16
+    for (const o of ORIGINS) {
+      const col = this.ownerColor(o.id)
+      ctx.fillStyle = col
+      ctx.fillRect(lx, H - 24, 14, 14)
+      ctx.fillStyle = '#e7e3da'
+      const name = o.id === this.originId ? 'Sen' : originLook(o.id).name
+      ctx.fillText(name, lx + 19, H - 12)
+      lx += 22 + ctx.measureText(name).width + 14
     }
     const hops = this.hopsTo(home)
-    this.domSet('net-line', `Sarı: buradasın · Yeşil: evin · Turuncu: başka ırkların evi · ${hops > 0 ? `eve ${hops} kapı` : 'evdesin'}. Bir sisteme dokun: oraya rota.`)
+    this.domSet('net-line', `Halka dilimleri: o sistemde kimin kaç kolonisi var. Sarı çizgi: rotan. ${hops > 0 ? `Eve ${hops} kapı.` : 'Evdesin.'} Bir sisteme dokun: GPS oraya götürür.`)
   }
 
   private netClick(event: MouseEvent) {
@@ -6038,14 +6505,146 @@ class Game {
     }
     if (!best) return
     if (best === this.universeId) return
+    if (best === 'avlu') {
+      this.route = { kind: 'hole', id: 'avlu', system: 'avlu' }
+      this.toast(`GPS: Sessiz Avlu'nun kara deliği · ${this.hopsTo('avlu')} kapı`)
+      this.drawNetMap()
+      return
+    }
     const planet = UNIVERSES[best].planets.find((p) => p.home)
     this.route = planet ? { kind: 'planet', id: planet.id, system: best } : { kind: 'worm', id: best, system: best }
     this.toast(`Rota: ${UNIVERSES[best].name} · ${this.hopsTo(best)} kapı`)
     this.drawNetMap()
   }
 
+  /** Bu sistemin üstten haritası: gezegenler sahiplerinin renginde, eşikler, güneş ve sen. Dokun: GPS rotası. */
+  private sysSpots: { x: number; y: number; r: number; route: RouteTarget; name: string }[] = []
+  private drawSysMap() {
+    const canvas = document.getElementById('sys-map') as HTMLCanvasElement | null
+    const ctx = canvas?.getContext('2d')
+    if (!canvas || !ctx) return
+    const W = canvas.width
+    const H = canvas.height
+    ctx.clearRect(0, 0, W, H)
+    this.domSet('sys-title', `Bu sistem · ${UNIVERSES[this.universeId].name}`)
+    let ext = 100
+    for (const p of this.planets) ext = Math.max(ext, Math.abs(p.pos.x) + p.def.radius, Math.abs(p.pos.z) + p.def.radius)
+    for (const h of this.holes) ext = Math.max(ext, Math.abs(h.pos.x) + 40, Math.abs(h.pos.z) + 40)
+    const k = Math.min((W / 2 - 30) / ext, (H / 2 - 24) / ext)
+    const X = (v: Vector3) => W / 2 + v.x * k
+    const Y = (v: Vector3) => H / 2 + v.z * k
+    this.sysSpots = []
+    ctx.textAlign = 'center'
+    ctx.font = '17px sans-serif'
+    const target = this.route && this.route.system === this.universeId ? this.route : null
+    for (const p of this.planets) {
+      const x = X(p.pos)
+      const y = Y(p.pos)
+      const r = Math.max(7, p.def.radius * k)
+      const c = this.colonies[p.def.id]
+      if (p.def.heat) {
+        const g = ctx.createRadialGradient(x, y, 0, x, y, r * 1.8)
+        g.addColorStop(0, '#fff6c8')
+        g.addColorStop(0.5, '#ffb84a')
+        g.addColorStop(1, 'rgba(255,140,40,0)')
+        ctx.fillStyle = g
+        ctx.beginPath()
+        ctx.arc(x, y, r * 1.8, 0, Math.PI * 2)
+        ctx.fill()
+        continue
+      }
+      ctx.fillStyle = `#${p.def.color.toString(16).padStart(6, '0')}`
+      ctx.beginPath()
+      ctx.arc(x, y, r, 0, Math.PI * 2)
+      ctx.fill()
+      if (c && c.universe === this.universeId) {
+        ctx.strokeStyle = this.ownerColor(c.owner)
+        ctx.lineWidth = 6
+        ctx.beginPath()
+        ctx.arc(x, y, r + 5, 0, Math.PI * 2)
+        ctx.stroke()
+      }
+      const hot = target && target.kind === 'planet' && target.id === p.def.id
+      if (hot) {
+        ctx.strokeStyle = '#ffe27a'
+        ctx.lineWidth = 3
+        ctx.setLineDash([6, 5])
+        ctx.beginPath()
+        ctx.arc(x, y, r + 13, 0, Math.PI * 2)
+        ctx.stroke()
+        ctx.setLineDash([])
+      }
+      const wild = !c && !p.def.home && !this.cleared.has(p.def.id) && p.def.landable !== false
+      ctx.fillStyle = '#f3ead8'
+      ctx.fillText(p.def.name, x, y - r - 10)
+      ctx.fillStyle = c ? this.ownerColor(c.owner) : '#a8b89a'
+      ctx.fillText(c ? (this.mine(c) ? (c.kind === 'main' ? 'ana üssün' : 'senin') : originLook(c.owner).name) : wild ? 'Garibanlar' : '', x, y + r + 20)
+      this.sysSpots.push({ x, y, r: r + 12, route: { kind: 'planet', id: p.def.id, system: this.universeId }, name: p.def.name })
+    }
+    for (const h of this.holes) {
+      const x = X(h.pos)
+      const y = Y(h.pos)
+      if (h.kind === 'worm' && h.to) {
+        ctx.strokeStyle = '#b48aff'
+        ctx.lineWidth = 4
+        ctx.beginPath()
+        ctx.arc(x, y, 10, 0, Math.PI * 2)
+        ctx.stroke()
+        ctx.fillStyle = '#d8c4ff'
+        ctx.fillText(`eşik → ${UNIVERSES[h.to].name}`, x, y + 28)
+        this.sysSpots.push({ x, y, r: 22, route: { kind: 'worm', id: h.to, system: this.universeId }, name: `eşik → ${UNIVERSES[h.to].name}` })
+      } else if (h.kind === 'hole') {
+        ctx.fillStyle = '#000'
+        ctx.strokeStyle = '#ffb870'
+        ctx.lineWidth = 4
+        ctx.beginPath()
+        ctx.arc(x, y, 16, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.stroke()
+        ctx.fillStyle = '#ffe2b0'
+        ctx.fillText('kara delik', x, y + 34)
+        this.sysSpots.push({ x, y, r: 26, route: { kind: 'hole', id: this.universeId, system: this.universeId }, name: 'kara delik' })
+      }
+    }
+    // Sen.
+    const sx = X(this.pos)
+    const sy = Y(this.pos)
+    ctx.fillStyle = '#ffffff'
+    ctx.beginPath()
+    ctx.moveTo(sx, sy - 11)
+    ctx.lineTo(sx - 8, sy + 8)
+    ctx.lineTo(sx + 8, sy + 8)
+    ctx.closePath()
+    ctx.fill()
+    ctx.fillStyle = '#ffe27a'
+    ctx.fillText('sen', sx, sy + 26)
+  }
+
+  private sysClick(event: MouseEvent) {
+    const canvas = event.currentTarget as HTMLCanvasElement
+    const rect = canvas.getBoundingClientRect()
+    const x = ((event.clientX - rect.left) / rect.width) * canvas.width
+    const y = ((event.clientY - rect.top) / rect.height) * canvas.height
+    let best: (typeof this.sysSpots)[number] | null = null
+    let bd = Infinity
+    for (const s of this.sysSpots) {
+      const d = Math.hypot(s.x - x, s.y - y)
+      if (d < Math.max(s.r, 30) && d < bd) {
+        bd = d
+        best = s
+      }
+    }
+    if (!best) return
+    this.route = best.route
+    this.routeByQuest = false
+    this.toast(`GPS: ${best.name}`)
+    this.drawSysMap()
+    this.drawNetMap()
+  }
+
   private openMap() {
     this.drawNetMap()
+    this.drawSysMap()
     const list = must<HTMLDivElement>('map-list')
     list.innerHTML = ''
     const add = (label: string, route: RouteTarget) => {
@@ -6210,6 +6809,7 @@ class Game {
       this.toggleRadar()
     })
     must<HTMLButtonElement>('map-close').addEventListener('click', () => must<HTMLElement>('starmap').classList.add('hidden'))
+    must<HTMLCanvasElement>('sys-map').addEventListener('click', (e) => this.sysClick(e))
     must<HTMLButtonElement>('controls-close').addEventListener('click', () => this.hideControls())
     must<HTMLButtonElement>('pa-resume').addEventListener('click', () => this.resume())
     must<HTMLButtonElement>('pa-controls').addEventListener('click', () => this.showControls())
@@ -6727,6 +7327,8 @@ class Game {
   selCreatures: Partial<Record<OriginId, Rig>> = {}
   selActive = false
   selAttackP = -1
+  /** Test/önizleme: seçim sahnesinde köken yerine başka bir türü (Tombiş, Gariban) gösterir. */
+  selOverride: Rig | null = null
 
   /** Seçim sahnesi: gerçek 3B karakter ve gemi, sürükleyerek döner; kamera sahne alanını ortalar. */
   private updateSelect(dt: number) {
@@ -6736,13 +7338,14 @@ class Game {
       const pilot = this.pilots[o.id]
       if (pilot) pilot.visible = false
     }
-    let rig = this.selCreatures[id]
+    let rig = this.selOverride ?? this.selCreatures[id]
+    if (this.selOverride) this.selOverride.root.visible = this.mode === 'select'
     if (!rig) {
       rig = buildCreature(originLook(id))
       this.scene.add(rig.root)
       this.selCreatures[id] = rig
     }
-    for (const [k, r] of Object.entries(this.selCreatures)) if (r) r.root.visible = k === id && this.mode === 'select'
+    for (const [k, r] of Object.entries(this.selCreatures)) if (r) r.root.visible = !this.selOverride && k === id && this.mode === 'select'
     if (!this.selDrag) this.selSpin += dt * 0.35
     const yaw = this.selYaw + this.selSpin
     const cx = 33
@@ -6817,7 +7420,8 @@ class Game {
       const disk = this.diskMeshes[i]
       disk.visible = true
       disk.position.set(def.x, def.y, def.z)
-      disk.scale.setScalar(Math.max(0.5, def.rs / 18))
+      // Sessiz Avlu galaksinin kalbi: birikim diski çok daha geniş (görsel şölen).
+      disk.scale.setScalar(Math.max(0.5, def.rs / 18) * (id === 'avlu' ? 2.6 : 1))
       this.holes.push({
         kind: 'hole',
         pos: disk.position,
@@ -6988,7 +7592,7 @@ class Game {
       this.transitionLock = 2.8
       this.snapCamera = true
       this.toast(this.isHome() ? `${uni.name}. Ev sistemi — kalkanın burada çabuk döner.` : `${uni.name}. ${uni.line}`)
-      if (this.isHome() && this.tutorialAt('home')) this.spawnHomePatrols(Math.min(1, this.homePatrols))
+      if (this.isHome() && this.tutorialAt('gate')) this.spawnHomePatrols(Math.min(1, this.homePatrols))
       if (this.foreignHome(to)) this.raiseAmbush()
       if (to === 'avlu' && !this.avluSeen) {
         this.avluSeen = true
@@ -7055,14 +7659,46 @@ class Game {
     this.wellMesh.rotation.y += dt
     this.wellMesh.scale.setScalar(0.9 + Math.sin(this.clockT * 7) * 0.06)
     {
+      // Senin kara deliğin de gerçek: olay ufkuna giren düşman parçalanır; sen de girersen ölürsün.
       const selfDist = this.pos.distanceTo(this.wellPos)
-      if (selfDist < 4.2) this.hurtPlayer(1.6 * dt, true)
+      // Kendi kara deliğin seni de çeker (yakında güçlü); olay ufku herkes için aynı.
+      if (selfDist < 24 && this.layer === 'ship') {
+        vA.subVectors(this.wellPos, this.pos)
+        this.vel.addScaledVector(vA.normalize(), Math.min(90, 900 / Math.max(1, selfDist * selfDist)) * dt)
+      }
+      if (selfDist < 4.2) {
+        this.fx.explosion(this.pos, 0xffe2b0, 2.4)
+        this.hull = 0
+        this.shield = 0
+        this.toast('Kendi kara deliğine düştün: gemi parçalandı.')
+        this.lose('combat')
+        return
+      }
+      if (selfDist < 9) this.hurtPlayer(6 * dt, true)
       for (const enemy of [...this.enemies]) {
         if (!enemy.alive) continue
         vA.subVectors(this.wellPos, enemy.pos)
         const dist = Math.max(0.5, vA.length())
         enemy.vel.addScaledVector(vA, (64 / dist) * dt)
-        if (dist < 24) this.hurtEnemy(enemy, 14 * dt)
+        if (dist < 4.2) {
+          this.fx.explosion(enemy.pos, 0xffe2b0, 1.6)
+          this.hurtEnemy(enemy, enemy.hull + enemy.shield + 1)
+        } else if (dist < 24) this.hurtEnemy(enemy, 14 * dt)
+      }
+      // İki kara delik birleşirse büyür: düşmanın kara deliğine seninkini atarsan dev bir kara delik olur.
+      for (const well of this.enemyWells) {
+        if (!well.alive || well.pos.distanceTo(this.wellPos) > 22) continue
+        well.size = Math.min(3, (well.size ?? 1) * 1.7)
+        well.life += 3
+        well.pos.lerp(this.wellPos, 0.5)
+        this.wellLife = 0
+        this.wellMesh.visible = false
+        this.fx.wave(well.pos, 0xffe2b0, 40, 0.8)
+        this.fx.flash(well.pos, 0xffffff, 30, 0.4)
+        this.trauma = 1
+        this.audio.boom()
+        this.toast('İki kara delik birleşti: daha büyük ve daha aç!')
+        break
       }
     }
     }
@@ -7072,34 +7708,36 @@ class Game {
       well.mesh.visible = well.life > 0
       well.mesh.position.copy(well.pos)
       well.mesh.rotation.y += dt * 1.4
+      const sz = well.size ?? 1
+      well.mesh.scale.setScalar(sz)
       if (well.life <= 0) {
         well.alive = false
         well.owner = null
         continue
       }
       // Gerçek kara delik: olay ufkuna (WELL_EH) düşen her gemi parçalanır; çevresi güçlü çeker ve yakar.
-      const WELL_EH = 4.2
+      const WELL_EH = 4.2 * sz
       for (const enemy of [...this.enemies]) {
         if (!enemy.alive) continue
         vA.subVectors(well.pos, enemy.pos)
         const dist = Math.max(0.4, vA.length())
         // Açan gemi de dahil: herkes aynı güçle çekilir; olay ufkuna giren parçalanır.
-        enemy.vel.addScaledVector(vA, Math.min(220, Math.max(60 / dist, 3000 / (dist * dist))) * dt)
+        enemy.vel.addScaledVector(vA, Math.min(120, Math.max(18 * sz / dist, 900 * sz * sz / (dist * dist))) * dt)
         // Geminin gövdesi olay ufkuna değdiği an (yalnız merkezi değil) parçalanır.
         const bodyR = enemy.giant ? 2.6 * enemy.scale : 2.2
         if (dist < WELL_EH + bodyR * 0.6) {
           this.fx.explosion(enemy.pos, 0xffe2b0, enemy.giant ? 2.4 : 1.4)
           this.hurtEnemy(enemy, enemy.hull + enemy.shield + 1)
           if (enemy === well.owner) this.toast('Amiral gemisi kendi kara deliğine düştü!')
-        } else if (dist < 16) this.hurtEnemy(enemy, 12 * dt)
+        } else if (dist < 16 * sz) this.hurtEnemy(enemy, 12 * dt)
       }
       for (let i = this.escorts.length - 1; i >= 0; i--) {
         if (this.escorts[i].position.distanceTo(well.pos) < WELL_EH + 1) this.loseEscort(i, 'Eşlik gemin kara deliğe düştü ve parçalandı.', true)
       }
       const playerDist = this.pos.distanceTo(well.pos)
-      if (playerDist < 26 && (this.mode === 'combat' || this.mode === 'map') && this.layer === 'ship') {
+      if (playerDist < 26 * sz && (this.mode === 'combat' || this.mode === 'map') && this.layer === 'ship') {
         vC.subVectors(well.pos, this.pos)
-        this.vel.addScaledVector(vC, (40 / Math.max(0.4, playerDist)) * dt)
+        this.vel.addScaledVector(vC, (40 * sz / Math.max(0.4, playerDist)) * dt)
         if (playerDist < WELL_EH) {
           // Olay ufku: gemi parçalanır.
           this.fx.explosion(this.pos, 0xffe2b0, 2.4)
@@ -7109,7 +7747,7 @@ class Game {
           this.lose('combat')
           return
         }
-        if (playerDist < 14) {
+        if (playerDist < 14 * sz) {
           this.hitCd = Math.max(this.hitCd, 0.5)
           this.hurtPlayer(14 * dt, true)
           this.hurtV = Math.max(this.hurtV, 0.5)
@@ -7220,6 +7858,7 @@ class Game {
     if (kind === 'rocket') return this.rocketMat
     if (kind === 'plasma') return this.plasmaMat
     if (kind === 'chain') return this.chainMat
+    if (kind === 'flak') return this.rocketMat
     return friendly ? this.laserMat : this.boltMat
   }
 
@@ -7245,9 +7884,13 @@ class Game {
       this.spawnBoom(at, 0.9, 0xb8e6ff)
     } else if (kind === 'pellet') {
       this.spawnBoom(at, 0.45, 0xffd890)
+      this.sparks.burst(at, 0xffd890, 5, 8, 0.4)
     } else {
       this.spawnBoom(at, 0.55, 0xffe2c4)
+      this.sparks.burst(at, 0xfff0c0, 4, 7, 0.35)
     }
+    // İsabet "tık"ı: vurduğunu kulağınla da duy.
+    this.audio.sweep(1900, 1300, 0.035, 'square', 0.018)
   }
 
   /** Yıldırım: iki nokta arasında kırık, parlayan bir çizgi; kısa sürede söner. */
@@ -7288,6 +7931,29 @@ class Game {
   }
 
   /** Baskın zamanlayıcısı: eğitim karakol adımına gelince, ara sıra düşman bir ırk kolonilerinden birine saldırır. */
+  /** Yaşayan galaksi: bulunduğun sistemdeki yabancı koloniler gemi kaldırır (devriye ya da seni duydularsa av). */
+  private launchT = 50
+  botLaunch(dt: number) {
+    if (!this.tutorialAt('gate') || this.mode !== 'map') return
+    this.launchT -= dt
+    if (this.launchT > 0) return
+    this.launchT = 55 + Math.random() * 40
+    if (this.fleets.filter((f) => !f.gariban && !f.bomber).length >= 3) return
+    const hostile = Object.values(this.colonies).filter((c) => c && c.universe === this.universeId && !this.mine(c) && !friendly(this.rel[c.owner]))
+    if (!hostile.length) return
+    const c = hostile[Math.floor(Math.random() * hostile.length)]
+    const planet = this.planetOf(c)
+    if (!planet) return
+    const up = this.worldDir(c.dir, planet, new Vector3())
+    const at = planet.pos.clone().addScaledVector(up, planet.def.radius + 24)
+    const n = Math.round(2 + this.tierMul(c.owner) + Math.random())
+    const hunt = this.vis > 40 && this.layer === 'ship'
+    const f = this.spawnFleet(n, 1 + (this.tierMul(c.owner) - 1) * 2, at, hunt ? 'hunt' : 'patrol')
+    f.faction = c.owner
+    this.fx.column(at, up, WAR[c.owner].color, 30, 3, 1.2)
+    this.feed('🚀', `${factionName(c.owner)}, ${c.planetName} gezegeninden ${n} gemi kaldırdı${hunt ? ' — seni arıyorlar' : ''}`, hunt ? 'bad' : 'info')
+  }
+
   /* ---------- Fırsatlar: 5–8 dakikada bir küçük ödül ya da sana gelen küçük tehdit ---------- */
   oppT = 300
   opp: { mesh: THREEGroup; pos: Vector3; t: number } | null = null
@@ -7401,7 +8067,7 @@ class Game {
       }
       return
     }
-    if (!this.tutorialAt('capture')) return
+    if (!this.tutorialAt('gate')) return
     this.raidT -= dt
     if (this.raidT > 0) return
     this.raidT = 240 + Math.random() * 240
@@ -7443,6 +8109,45 @@ class Game {
     }
   }
 
+  /** Emir şeridini çiz: gemide eşlik gemileri varsa 1/2/3, yayayken ekip varsa 5/6/7. */
+  private cmdKey = ''
+  private paintCmdStrip() {
+    const el = document.getElementById('cmd-strip')
+    if (!el) return
+    const ship = this.layer === 'ship' && this.escorts.length > 0
+    const foot = this.layer === 'foot' && this.units.some((u) => u.alive && u.squad)
+    const show = (ship || foot) && this.mode === 'map' && !this.cine && !this.photo
+    el.classList.toggle('hidden', !show)
+    if (!show) {
+      this.cmdKey = ''
+      return
+    }
+    const key = ship ? `s:${this.escortOrder}:${this.escorts.length}` : `f:${this.squadOrder}:${this.squadSize()}`
+    if (key === this.cmdKey) return
+    this.cmdKey = key
+    el.innerHTML = ''
+    const label = document.createElement('span')
+    label.textContent = ship ? `Eşlik ${this.escorts.length}` : `Ekip ${this.squadSize()}`
+    el.append(label)
+    const items: [string, string, string][] = ship
+      ? [['1', 'takip', '◎ Takip'], ['2', 'saldir', '⚔ Saldır'], ['3', 'koru', '⛨ Koru']]
+      : [['5', 'takip', '◎ Takip'], ['6', 'bekle', '■ Bekle'], ['7', 'saldir', '⚔ Saldır']]
+    for (const [k, id, name] of items) {
+      const b = document.createElement('button')
+      b.type = 'button'
+      b.className = (ship ? this.escortOrder : this.squadOrder) === id ? 'on' : ''
+      b.innerHTML = `<kbd>${k}</kbd>${name}`
+      b.addEventListener('click', () => {
+        if (ship) {
+          this.escortOrder = id as 'takip' | 'saldir' | 'koru'
+          this.audio.ui()
+        } else this.setSquadOrder(id as SquadOrder)
+        this.cmdKey = ''
+      })
+      el.append(b)
+    }
+  }
+
   dodgeWas = false
   camWas = false
   dodgeDir = 1
@@ -7479,14 +8184,64 @@ class Game {
     this.audio.sweep(300, 900, 0.25, 'sine', 0.05)
   }
 
+  /** F: hedefe kilitlen / kilidi bırak. Seri silahlar (lazer, saçma, şimşek) kilitli hedefe kendiliğinden
+   *  nişan alır; ağır silahları (roket, plazma) sen tutturursun. */
+  lockOn = false
+  private thornT = 0
+  toggleLock() {
+    if (this.lockOn) {
+      this.lockOn = false
+      this.toast('Kilit bırakıldı.')
+      this.audio.ui()
+      return
+    }
+    shipForward(this.quat, vH)
+    let best: Enemy | null = null
+    let ba = Infinity
+    for (const e of this.enemies) {
+      if (!e.alive) continue
+      vI.subVectors(e.pos, this.pos)
+      const d = vI.length()
+      if (d > 280) continue
+      const a = vI.multiplyScalar(1 / d).angleTo(vH) + d / 900
+      if (a < ba) {
+        ba = a
+        best = e
+      }
+    }
+    if (!best) return
+    this.pickedTarget = best
+    this.lockOn = true
+    this.audio.sweep(500, 1300, 0.12, 'square', 0.04)
+    const rapid = this.weapon === 'laser' || this.weapon === 'spread' || this.weapon === 'chain'
+    this.toast(rapid ? 'Kilitlendi: seri silahın hedefe kendiliğinden nişan alır. (F: bırak, Tab: sıradaki)' : 'Kilitlendi: hedef işaretli; roket ve plazmayı sen tutturmalısın. (F: bırak)')
+  }
+
   private shotAssist(fwd: Vector3): Vector3 | null {
     if (!this.fighting()) return null
+    const rapid = this.weapon === 'laser' || this.weapon === 'spread' || this.weapon === 'chain'
+    if (this.lockOn && !this.pickedTarget?.alive) this.lockOn = false
+    if (this.lockOn && rapid && this.pickedTarget) {
+      const t = this.pickedTarget
+      vH.subVectors(t.pos, this.pos)
+      const d = vH.length()
+      // Kilit: önüne ~70° içindeyse kendiliğinden nişan; küçük bir saçılma kalır (kusursuz değil).
+      if (d < 300 && vH.normalize().angleTo(fwd) < 1.2) {
+        const speed = this.weapon === 'spread' ? 230 : 340
+        vI.copy(t.pos).addScaledVector(t.vel, d / speed).sub(this.pos).normalize()
+        vI.x += (Math.random() - 0.5) * 0.03
+        vI.y += (Math.random() - 0.5) * 0.03
+        vI.z += (Math.random() - 0.5) * 0.03
+        return vI.normalize()
+      }
+    }
     let best: Enemy | null = null
-    let bestA = 0.26
+    // Ağır silahlarda yardım dar: sen tutturursun.
+    let bestA = rapid ? 0.26 : 0.1
     const p = this.pickedTarget
     if (p?.alive) {
       vH.subVectors(p.pos, this.pos)
-      if (vH.length() < 260 && vH.normalize().angleTo(fwd) < 0.42) {
+      if (vH.length() < 260 && vH.normalize().angleTo(fwd) < (rapid ? 0.42 : 0.14)) {
         best = p
         bestA = -1
       }
@@ -7564,10 +8319,29 @@ class Game {
       this.fireCd = 0.11
       this.spawnShot(true, vD, vA, 9 * mul, 'laser')
     }
-    this.audio.shipShot()
-    this.muzzleT = 0.045
+    // Atış hissi: silaha özel ses, namlu ateşi, geri tepme, kamera vuruşu ve iz.
+    const w = this.weapon
+    const kind = w === 'spread' ? 'spread' : w === 'rocket' ? 'rocket' : w === 'plasma' ? 'plasma' : w === 'chain' ? 'chain' : 'laser'
+    this.audio.weaponShot(kind)
+    if (kind === 'laser') this.audio.shipShot()
+    const flashCol = kind === 'rocket' ? 0xffa040 : kind === 'plasma' ? 0x9affd0 : kind === 'chain' ? 0xc8e8ff : kind === 'spread' ? 0xffd890 : 0xfff0c0
+    this.fx.flash(vD, flashCol, kind === 'laser' ? 1.3 : kind === 'chain' ? 2 : 3.2, kind === 'laser' ? 0.05 : 0.1)
+    const kick = kind === 'laser' ? 0.09 : kind === 'chain' ? 0.18 : kind === 'plasma' ? 0.32 : kind === 'spread' ? 0.42 : 0.5
+    this.recoil = Math.min(0.9, this.recoil + kick)
+    this.trauma = Math.min(0.5, this.trauma + kick * 0.18)
+    if (kind === 'laser') {
+      // Taramalı iz: namludan ileri uzanan kısa parlak çizgi.
+      vE.copy(vD).addScaledVector(vA, 34)
+      this.tracers.fire(vD, vE, 0xffe6b0, 0.09, 0.05)
+    } else if (kind === 'spread') this.fx.puff(vD, 0xb0a898, 4, 0.9, 0.35)
+    else if (kind === 'rocket') {
+      this.fx.puff(vD, 0x9a948c, 6, 1.4, 0.8)
+      this.fx.flash(vD, 0xff7a30, 4, 0.16)
+    }
+    this.muzzleT = kind === 'laser' ? 0.045 : 0.09
     this.visual.muzzle.position.set(this.muzzleSide * 0.32, 0, -2.35)
   }
+  recoil = 0
 
   private pollGear() {
     const controlsOpen = !this.dom.controls.classList.contains('hidden')
@@ -7824,8 +8598,50 @@ class Game {
 
 
   private toggleSurface() {
-    if (this.layer === 'foot') this.board()
-    else this.land()
+    if (this.layer === 'foot') {
+      // Ekibin ya da üssünde asker varsa önce kimlerin bineceği, kimlerin kalacağı sorulur.
+      if (!this.boardingAsk()) this.board()
+    } else this.land()
+  }
+
+  /** Binişte sorulacak bir şey var mı: ekip ya da kendi üssünde ekibe alınabilecek asker. */
+  private boardingAsk() {
+    if (!this.footPlanet || this.pos.distanceTo(this.parkedShip) > 18) return false
+    const squad = this.units.some((u) => u.alive && u.squad)
+    const c = this.colonyHere(this.footPlanet)
+    const garrison = Boolean(c && this.mine(c) && this.garrisonUnits(c).length)
+    if (!squad && !garrison) return false
+    return this.openBoarding()
+  }
+
+  /** Üssün ekibe alınabilecek askerleri (işçiler hariç): yerde duranlar. */
+  private garrisonUnits(c: Colony) {
+    return this.units.filter((u) => u.alive && !u.squad && !u.invader && u.colonyId === c.planetId && u.faction === c.owner && (u.kind === 'settler' || isHero(u.kind) || u.kind === 'commander'))
+  }
+
+  /** Bu gezegene inişte yanındaki ekip sayısı (biniş panelinde gösterilir). */
+  landedCrew = 0
+
+  /** Üssü terk et: herkes (sığdığı kadar) gemiye biner, sığmayanlar gezegende bekler; üs kalkar, gezegen boşalır. */
+  abandonColony() {
+    const planet = this.footPlanet
+    const c = planet ? this.colonyHere(planet) : null
+    if (!planet || !c || !this.mine(c)) return false
+    if (planet.def.id === this.homePlanetId()) {
+      this.toast('Ev üssün terk edilemez.')
+      return false
+    }
+    for (const u of this.garrisonUnits(c)) u.squad = true
+    const everyone = this.bestCrew(this.units.filter((u) => u.alive && u.squad))
+    this.boardPick = new Set(everyone.slice(0, this.crewCap()))
+    const name = planet.def.name
+    this.clearGround()
+    this.detachColony(c)
+    delete this.colonies[c.planetId]
+    this.feed('⚑', `${name} üssünü terk ettin; gezegen boşaldı.`, 'info')
+    this.board()
+    this.mirrorRun()
+    return true
   }
 
   /** İnerken süren savaş askıya alınır: düşman gemileri yere inmez, yörüngede bekler; kalkınca yeniden saldırır. */
@@ -7864,6 +8680,7 @@ class Game {
    * ise üssün yanına iner; düşman üssünün dibine inmezsin (45 birim ötesi). */
   baseLandId: string | null = null
   private land(toBase = false) {
+    if (this.cine) this.endCine()
     const planet = this.nearestLandable()
     if (planet && this.baseLandId === planet.def.id) {
       toBase = true
@@ -7940,12 +8757,14 @@ class Game {
     else this.clearGround()
     this.disembark(planet)
     this.rescueStranded(planet)
+    this.spawnFallen(planet)
     this.discover(planet)
     this.mirrorRun()
     return true
   }
 
   private board() {
+    if (this.cine) this.endCine()
     if (!this.footPlanet || this.mode !== 'map') return false
     if (this.pos.distanceTo(this.parkedShip) > 18) {
       this.toast('Gemi uzakta. Yürüyerek dön.')
@@ -7990,8 +8809,12 @@ class Game {
 
   /** Gemi + eşlik gemilerinin taşıyabileceği ekip (gövde geliştirmesiyle artar). */
   crewCap() {
-    return 10 + (this.up.hull - 1)
+    // Gemin ve eşlik/nakliye gemilerin: gövde geliştirmesi her kademede 5 kişilik yer açar (en çok 32).
+    return 12 + (this.up.hull - 1) * 5
   }
+
+  /** Ekibe alınacak kişi sayısı (Y panelinden seçilir; null = sığabildiği kadar). */
+  squadWant: number | null = null
 
   /** En iyiler: komutan, sonra ana karakterler, sonra canı yüksek olanlar. */
   private bestCrew(list: Unit[]) {
@@ -8020,10 +8843,15 @@ class Game {
       this.toast('Gemi uzakta. Yürüyerek dön.')
       return false
     }
-    const all = this.bestCrew(this.units.filter((u) => u.alive && u.squad))
+    const here = this.colonyHere(this.footPlanet)
+    const own = Boolean(here && this.mine(here))
+    const squadNow = this.bestCrew(this.units.filter((u) => u.alive && u.squad))
+    const garrison = here && own ? this.bestCrew(this.garrisonUnits(here)) : []
+    const all = [...squadNow, ...garrison]
     if (!all.length) return this.board()
-    const pick = new Set(all.slice(0, this.crewCap()))
+    const pick = new Set(squadNow.slice(0, this.crewCap()))
     const box = must<HTMLElement>('board-list')
+    const planetName = this.footPlanet.def.name
     const paint = () => {
       box.innerHTML = ''
       for (const u of all) {
@@ -8038,16 +8866,25 @@ class Game {
           paint()
         })
         const name = document.createElement('b')
-        name.textContent = this.unitLabel(u)
+        name.textContent = `${this.unitLabel(u)}${u.squad ? '' : ' · garnizon'}`
         const hp = document.createElement('span')
         hp.textContent = `${Math.round(u.hull)}/${u.hullMax}`
         l.append(cb, name, hp)
         box.append(l)
       }
-      this.domSet('board-cap', `Kapasite: ${pick.size}/${this.crewCap()} (gövde geliştirmesi artırır)`)
-      const c = this.colonyHere(this.footPlanet)
-      this.domSet('board-left', all.length - pick.size > 0 ? `Binmeyen ${all.length - pick.size} kişi ${c && this.mine(c) ? 'bu üssün garnizonuna katılır' : 'burada bekler; inince seni bulur'}.` : 'Herkes biniyor.')
+      const esc = Math.min(6, Math.ceil(Math.max(0, pick.size - SHIP_CREW) / ESCORT_CREW))
+      this.domSet('board-cap', `Gemiye binecek: ${pick.size}/${this.crewCap()} kişi · gemin ${SHIP_CREW} kişi taşır, fazlası ${esc ? `${esc} eşlik gemisine` : 'eşlik gemilerine'} biner (her biri ${ESCORT_CREW}; gövde geliştirmesi kapasiteyi artırır)`)
+      this.domSet('board-landed', `${planetName}: seninle ${this.landedCrew} kişi indi · ekipte şimdi ${squadNow.length} kişi${own ? ` · üssün garnizonunda ${garrison.length} asker` : ''}`)
+      const stay = all.length - pick.size
+      const stayG = garrison.filter((u) => !pick.has(u)).length + squadNow.filter((u) => !pick.has(u)).length
+      let left: string
+      if (own) {
+        left = stayG > 0 ? `Üste ${stayG} kişi kalır: sen yokken üssü savunur (taretlerle birlikte).` : '⚠ Üste kimse kalmıyor: yalnız taretler savunur, baskında kolayca düşer.'
+      } else left = stay > 0 ? `Binmeyen ${stay} kişi burada bekler; yeniden inince sana katılır.` : 'Herkes biniyor; gezegende kimse kalmıyor.'
+      this.domSet('board-left', left)
       must<HTMLButtonElement>('board-go').disabled = pick.size > this.crewCap()
+      const ab = must<HTMLButtonElement>('board-abandon')
+      ab.classList.toggle('hidden', !own || this.footPlanet?.def.id === this.homePlanetId())
     }
     must<HTMLButtonElement>('board-best').onclick = () => {
       pick.clear()
@@ -8055,12 +8892,23 @@ class Game {
       paint()
     }
     must<HTMLButtonElement>('board-all').onclick = () => {
+      // Herkes kalsın: tek başına kalk (ekip üste/burada kalır).
       pick.clear()
-      for (const u of all.slice(0, this.crewCap())) pick.add(u)
       paint()
+    }
+    must<HTMLButtonElement>('board-abandon').onclick = () => {
+      must<HTMLElement>('boarding').classList.add('hidden')
+      this.abandonColony()
     }
     must<HTMLButtonElement>('board-go').onclick = () => {
       must<HTMLElement>('boarding').classList.add('hidden')
+      // Seçilen garnizon askerleri ekibe katılır (üssün nüfusundan düşer).
+      for (const u of garrison) {
+        if (!pick.has(u) || !here) continue
+        u.squad = true
+        here.pop = Math.max(0, here.pop - 1)
+        if (isHero(u.kind)) here.trained = Math.max(0, (here.trained ?? 0) - 1)
+      }
       this.boardPick = new Set(pick)
       this.board()
     }
@@ -8648,9 +9496,42 @@ class Game {
       root.add(t.root)
     }
     this.buildDistrict(c, planet, root)
+    root.userData.garrisonOf = c.planetId
     this.pullDeposits(c, planet)
     // Üs kurulan gezegende yerli köyü (eski evler) görünmez: üs yerleşimin kendisi olur.
     if (planet.village) planet.village.visible = false
+  }
+
+  /** Yörüngeden görünen garnizon: üssün çevresinde nöbet tutan figürler (en çok 8). Gemiyle yaklaşınca
+   *  üssün savunmasını görürsün; inince yerlerini gerçek askerler alır. */
+  private buildGarrisonShow(c: Colony, planet: Planet, root: Group) {
+    const R = planet.def.radius
+    const g = new Group()
+    // Yalnız gemiyle yaklaşınca bir kez kurulur (her koloni için baştan kurmak pahalı).
+    g.name = 'garrison'
+    const look = originLook(c.owner)
+    const rigs: Rig[] = []
+    const ring = ((c.core?.userData.reach as number | undefined) ?? 10) + 3
+    for (let i = 0; i < 6; i++) {
+      const rig = i % 3 === 0 ? buildCreature(look) : buildMinion(look)
+      const dir = this.offsetDir(c.dir, (i / 6) * Math.PI * 2 + 0.3, ring + (i % 2) * 3, R, new Vector3())
+      const up = dir.clone().normalize()
+      const tangent = new Vector3(0, 1, 0).cross(up)
+      if (tangent.lengthSq() < 1e-4) tangent.set(1, 0, 0)
+      tangent.normalize()
+      const bit = new Vector3().crossVectors(tangent, up).normalize()
+      const size = 1.6
+      rig.root.position.copy(up).multiplyScalar(R - FEET * size + 0.05)
+      rig.root.quaternion.setFromRotationMatrix(new Matrix4().makeBasis(tangent, up, bit))
+      rig.root.scale.setScalar(size)
+      rigs.push(rig)
+      g.add(rig.root)
+    }
+    g.userData.rigs = rigs
+    g.visible = false
+    root.add(g)
+    root.userData.garrison = g
+    return g
   }
 
   /** Üssün yakınında hep birkaç yatak olsun: en yakın yataklar uzaktaysa 25–45 birim ötesine taşınır
@@ -8906,7 +9787,11 @@ class Game {
   }
 
   capOf(c: Colony) {
-    return Math.max(2, Math.round(settlerCap(c.level, c.turrets.length) * this.planetCapMul(c.planetId, c.universe)))
+    const base = settlerCap(c.level, c.turrets.length) * this.planetCapMul(c.planetId, c.universe)
+    if (this.mine(c)) return Math.max(2, Math.round(base))
+    // Güçlü ırkların üsleri kalabalık; ana üsler daha da kalabalık.
+    const homeBase = Boolean(UNIVERSES[c.universe]?.planets.find((d) => d.id === c.planetId)?.home)
+    return Math.max(2, Math.min(34, Math.round(base * this.tierMul(c.owner) * (homeBase ? 1.45 : 1))))
   }
 
   /** Eğitimdeki keşif gemisi komşu türden gelir (ilk solucan deliğinin arkasındaki ırk). */
@@ -8917,14 +9802,6 @@ class Game {
     return o && o.id !== this.originId ? o.id : (ORIGINS.find((x) => x.id !== this.originId)?.id ?? 'mars')
   }
 
-  /** Keşif gemisi yoksa (ya da kaçtıysa) birkaç saniye sonra ev sisteminde yenisi belirir. */
-  private tickScout(dt: number) {
-    if (this.universeId !== homeSystem(this.originId) || this.fleets.some((f) => f.scout) || this.scoutFight) return
-    this.scoutT += dt
-    if (this.scoutT < 3) return
-    this.scoutT = 0
-    this.spawnScout()
-  }
 
   spawnScout() {
     // Oyuncudan ~260 birim ötede, gezegenlerin dışında yavaşça dolaşır.
@@ -9239,6 +10116,30 @@ class Game {
     tip.textContent = mineC ? COLONY_ORDERS.find((o) => o.id === (c?.order ?? 'serbest'))?.blurb ?? '' : 'Taret kur, sonra birliklerini önüne ya da arkasına diz.'
     box.append(tip)
     // Komuta: bütün kolonilerin; sayılar, tek tıkla duruş, kışla eğitimi, burada taret kurma.
+    // Ekibe kaç kişi alınacak (K basınca): sen seçersin; gemin + eşlik gemilerin taşıyabildiği kadar.
+    {
+      const row = document.createElement('div')
+      row.className = 'squad-want'
+      const want = this.squadWant ?? this.crewCap()
+      const minus = document.createElement('button')
+      minus.type = 'button'
+      minus.textContent = '−'
+      const plus = document.createElement('button')
+      plus.type = 'button'
+      plus.textContent = '+'
+      const lab = document.createElement('span')
+      lab.textContent = `Ekibe alınacak: ${want} kişi (en çok ${this.crewCap()}: gemin 4 + her eşlik gemisi 5; gövde geliştirmesi artırır)`
+      minus.addEventListener('click', () => {
+        this.squadWant = Math.max(1, want - 1)
+        this.renderOrders()
+      })
+      plus.addEventListener('click', () => {
+        this.squadWant = Math.min(this.crewCap(), want + 1)
+        this.renderOrders()
+      })
+      row.append(minus, plus, lab)
+      box.append(row)
+    }
     const head3 = document.createElement('h4')
     head3.textContent = 'Kolonilerin'
     box.append(head3)
@@ -9279,12 +10180,31 @@ class Game {
       tb.className = 'ord'
       tb.disabled = col.level < 2
       tb.title = col.level < 2 ? 'Kışla üs seviye 2 ile açılır.' : `Kışla: ${this.costText(TRAIN_COST)}, ${TRAIN_TIME} sn (saldırı hazırlığında yarısı).`
-      tb.textContent = `Asker eğit (${(col.trained ?? 0) + (col.trainQ ?? 0)}/${trainCap(col.level)})`
+      tb.textContent = `Asker eğit ×1`
       tb.addEventListener('click', () => {
         this.trainSoldier(col)
         this.renderOrders()
       })
       acts.append(tb)
+      const tb5 = document.createElement('button')
+      tb5.type = 'button'
+      tb5.className = 'ord'
+      tb5.disabled = col.level < 2
+      tb5.textContent = '×5'
+      tb5.addEventListener('click', () => {
+        for (let i = 0; i < 5; i++) if (!this.trainSoldier(col)) break
+        this.renderOrders()
+      })
+      acts.append(tb5)
+      // Nüfus ve eğitim ilerlemesi.
+      const cap = this.capOf(col)
+      const bar = document.createElement('div')
+      bar.className = 'col-pop'
+      const pct = Math.min(100, (Math.floor(col.pop) / cap) * 100)
+      const tq = col.trainQ ?? 0
+      const left = tq ? Math.ceil((col.trainT ?? 0) / (col.posture === 'saldiri' ? 2 : 1)) : 0
+      bar.innerHTML = `<span>Nüfus ${Math.floor(col.pop)}/${cap}${tq ? ` · kışlada ${tq} kişi · sıradaki ${left} sn` : ''}</span><i style="width:${pct}%"></i>${tq ? `<b style="width:${Math.round((1 - (col.trainT ?? TRAIN_TIME) / TRAIN_TIME) * 100)}%"></b>` : ''}`
+      card.append(bar)
       const cb = document.createElement('button')
       cb.type = 'button'
       cb.className = 'ord'
@@ -9908,7 +10828,13 @@ class Game {
     const R = planet.def.radius
     const core = this.worldDir(c.dir, planet, vJ)
     const dir = this.offsetDir(core, Math.random() * Math.PI * 2, Math.min(5.5 + Math.random() * 5, Math.PI * R * 0.4), R, new Vector3())
-    this.makeUnit(kind, c.owner, false, c, planet, dir)
+    const u = this.makeUnit(kind, c.owner, false, c, planet, dir)
+    if (!this.mine(c)) {
+      const m = this.tierMul(c.owner)
+      u.hullMax = Math.round(u.hullMax * m)
+      u.hull = u.hullMax
+      u.dmgMul = m
+    }
     this.surfacePos(dir, planet, 1.2, vM)
     this.sparks.burst(vM, 0xfff1c4, 5, 4, 0.8, dir)
   }
@@ -10066,12 +10992,13 @@ class Game {
   squadCommander = false
   private updateUnits(planet: Planet, c: Colony | null, dt: number) {
     this.unitFrame++
+    this.foeSkillGround(planet, c, dt)
     const R = planet.def.radius
     this.units = this.units.filter((u) => u.alive)
     // Komutan ekipteyse: herkes %25 sert vurur ve yavaşça iyileşir.
     this.squadCommander = this.units.some((u) => u.squad && u.kind === 'commander')
     if (this.squadCommander) for (const u of this.units) if (u.squad && u.hull < u.hullMax) u.hull = Math.min(u.hullMax, u.hull + 1.5 * dt)
-    const crew = this.units.some((u) => u.squad)
+    const crew = this.units.some((u) => u.squad || u.fallen)
     if (!c && !crew) {
       if (this.units.length) this.clearGround()
       return
@@ -10094,7 +11021,8 @@ class Game {
       let best = 99
       if (this.hostileToPlayer(u.faction)) {
         const d = this.arc(u.dir, playerDir, R)
-        if (d < 12) {
+        // Düşen mürettebat seni arar (uzaktan da gelir); üs askerleri yakındaysa saldırır.
+        if (d < (u.fallen ? 90 : 12)) {
           best = d
           kind = 'player'
           target = playerDir
@@ -10140,11 +11068,13 @@ class Game {
         }
       }
       if ((u.invader || u.squad) && c && coreDir && u.faction !== c.owner) {
+        // Savunmacı kalmadıysa ekip kalan taretlere yürür (hepsi düşünce üs teslim olur; çekirdeği yıkmak yerine).
+        const noDef = u.squad && kind === 'none' && !list.some((x) => x.alive && !x.invader && !x.squad && x.colonyId === c.planetId && x.faction === c.owner && x.kind !== 'worker')
         for (const t of c.turrets) {
           if (!t.alive) continue
           const td = this.worldDir(t.dir, planet, vJ2)
           const d = this.arc(u.dir, td, R)
-          if (d < 11 && d < best) {
+          if ((d < 11 || noDef) && d < best) {
             best = d
             kind = 'turret'
             turret = t
@@ -10241,7 +11171,7 @@ class Game {
           ? Math.round(u.spec.dmg * 1.5 * this.skillDmgMul() * (this.squadCommander ? 1.25 : 1))
           : u.invader
             ? Math.round(u.spec.dmg * (1 + (c?.wave ?? 0) * 0.04))
-            : Math.round(u.spec.dmg * (1 + 0.15 * ((c?.level ?? 1) - 1)) * ordMul)
+            : Math.round(u.spec.dmg * (1 + 0.15 * ((c?.level ?? 1) - 1)) * ordMul * (u.dmgMul ?? 1))
         if (u.spec.reach > 6) {
           vM.copy(u.root.position).addScaledVector(u.dir, 1.4)
           if (kind === 'player') vL.copy(this.pos).addScaledVector(playerDir, 1)
@@ -10569,7 +11499,8 @@ class Game {
     const cmd = pool.filter((u) => u.kind === 'commander')
     const minions = pool.filter((u) => !isHero(u.kind) && u.kind !== 'commander')
     // Kışla (üs sv2+) ekip sınırını 2 artırır; komutan sınıra sayılmaz.
-    const room = Math.min(SQUAD_MAX + (c.level >= 2 ? 2 : 0) + (c.posture === 'saldiri' ? 2 : 0), pool.length - 1 - cmd.length)
+    const limit = Math.min(this.squadWant ?? this.crewCap(), this.crewCap())
+    const room = Math.min(limit, pool.length - 1 - cmd.length)
     const pick = [...cmd, ...[...heroes, ...minions].slice(0, Math.max(0, room))]
     for (const u of pick) {
       u.squad = true
@@ -10604,6 +11535,8 @@ class Game {
 
   private disembark(planet: Planet) {
     this.clearEscorts()
+    this.landedCrew = this.squad.length
+    if (this.squad.length) this.toast(`${planet.def.name}: ${this.squad.length} kişilik ekibinle indin. Kalkarken (L) kimlerin bineceğini, kimlerin kalacağını seçersin.`)
     if (!this.squad.length) return
     const R = planet.def.radius
     const me = vA.copy(this.pos).sub(planet.pos).normalize().clone()
@@ -10631,7 +11564,9 @@ class Game {
     e.removeFromParent()
     this.disposeMats(e)
     this.escorts.splice(i, 1)
-    const crew = this.squad.splice(0, Math.min(2, this.squad.length))
+    this.escortAi.splice(i, 1)
+    // Düşen gemideki ekip: o geminin taşıdığı kadar (en çok 5).
+    const crew = this.squad.splice(0, Math.min(ESCORT_CREW, Math.max(0, this.squad.length - SHIP_CREW)))
     this.audio.boom()
     if (!crew.length) {
       this.toast(why)
@@ -10664,6 +11599,58 @@ class Game {
     this.feed('⚑', `${planet.def.name}: ${live.length} mahsur ekip üyesi`, live.length ? 'bad' : 'bad')
   }
 
+  /** Düşman mürettebatı: vurulan gemi bir gezegene yakınsa içindekiler yaralı olarak yüzeye düşer
+   *  (yükseklik arttıkça ölme olasılığı artar); uzay boşluğunda patlayan gemiden kimse kurtulmaz. */
+  fallen: { planetId: string; universe: UniId; dir: Vector3; faction: OriginId; n: number }[] = []
+  crewFall(at: Vector3, faction: OriginId, n: number) {
+    let planet: Planet | null = null
+    let alt = Infinity
+    for (const p of this.planets) {
+      if (p.def.landable === false || p.def.heat) continue
+      const a = at.distanceTo(p.pos) - p.def.radius
+      if (a < alt) {
+        alt = a
+        planet = p
+      }
+    }
+    if (!planet || alt > 320) return 0
+    let live = 0
+    for (let i = 0; i < n; i++) if (Math.random() < clamp(1.05 - alt / 260, 0.1, 0.9)) live++
+    if (!live) return 0
+    // Kendi türünün üssü varsa oraya sığınırlar.
+    const c = this.colonies[planet.def.id]
+    if (c && c.owner === faction && !this.mine(c)) {
+      c.pop = Math.min(this.capOf(c), c.pop + live)
+      this.feed('⬇', `${live} ${factionName(faction)} mürettebatı ${planet.def.name} üssüne düştü`, 'info')
+      return live
+    }
+    const dir = this.toLocal(vO1.copy(at).sub(planet.pos).normalize(), planet, new Vector3())
+    this.fallen.push({ planetId: planet.def.id, universe: this.universeId, dir, faction, n: live })
+    this.fx.column(vO2.copy(planet.pos).addScaledVector(vO1, planet.def.radius), vO1, 0xff9a5a, 18, 1.2, 0.8)
+    this.feed('⬇', `${live} ${factionName(faction)} mürettebatı ${planet.def.name} yüzeyine düştü (yaralı)`, 'bad')
+    if (this.layer === 'foot' && this.footPlanet === planet) this.spawnFallen(planet)
+    return live
+  }
+
+  /** Düşen düşman mürettebatı: o gezegene inince (ya da oradaysan hemen) düştükleri yerde yarı canla belirir, saldırır. */
+  private spawnFallen(planet: Planet) {
+    const here = this.fallen.filter((f) => f.planetId === planet.def.id && f.universe === this.universeId)
+    if (!here.length) return
+    this.fallen = this.fallen.filter((f) => !here.includes(f))
+    let n = 0
+    for (const f of here) {
+      const w = this.worldDir(f.dir, planet, new Vector3())
+      for (let i = 0; i < f.n; i++) {
+        const dir = this.offsetDir(w, Math.random() * Math.PI * 2, 1.5 + Math.random() * 3, planet.def.radius, new Vector3())
+        const u = this.makeUnit(i % 3 === 2 ? 'brute' : 'runner', f.faction, true, null, planet, dir)
+        u.hull = Math.max(1, u.hullMax * 0.5)
+        u.fallen = true
+        n++
+      }
+    }
+    if (n) this.toast(`${n} düşman mürettebatı bu gezegene düşmüştü — yaralılar ama silahlılar!`)
+  }
+
   /** İndiğin gezegende mahsur ekip varsa: konumlarında belirir, sana katılırlar. */
   private rescueStranded(planet: Planet) {
     const here = this.stranded.filter((s) => s.planetId === planet.def.id && s.universe === this.universeId)
@@ -10688,7 +11675,7 @@ class Game {
 
   private buildEscorts() {
     this.clearEscorts()
-    const n = Math.min(4, Math.ceil(this.squad.length / 2))
+    const n = Math.min(ESCORT_SLOTS.length, Math.ceil(Math.max(0, this.squad.length - SHIP_CREW) / ESCORT_CREW))
     for (let i = 0; i < n; i++) {
       const ship = buildShip(this.originId)
       ship.shield.visible = false
@@ -10710,51 +11697,84 @@ class Game {
       e.traverse((o) => (o as Mesh).geometry?.dispose())
     }
     this.escorts = []
+    this.escortAi = []
   }
 
-  /** Eşlik gemileri oyuncunun arkasında kanat düzeninde uçar, çatışmada en yakın düşmana ateş eder. */
+  /** Eşlik gemileri: barışta kanat düzeni; savaşta her biri kendi hedefini seçer, çevresinde dalgalı
+   *  manevra yapar, kısa seriler halinde ateş eder ve bazen ıskalar (Takip: yakındakini, Saldır: senin hedefine,
+   *  Koru: sana yaklaşanı). */
+  escortAi: { target: Enemy | null; t: number; burst: number; cd: number; side: number; phase: number }[] = []
   private updateEscorts(dt: number) {
     if (!this.escorts.length) return
     const show = this.layer === 'ship' && (this.mode === 'map' || this.mode === 'combat')
-    const k = 1 - Math.exp(-5 * dt)
-    const target = this.escortOrder === 'saldir' ? (this.pickedTarget?.alive ? this.pickedTarget : this.enemies.find((x) => x.alive) ?? null) : null
+    const fight = this.fighting()
+    while (this.escortAi.length < this.escorts.length) this.escortAi.push({ target: null, t: 0, burst: 0, cd: Math.random(), side: Math.random() < 0.5 ? -1 : 1, phase: Math.random() * 6 })
+    const k = 1 - Math.exp(-(fight ? 2.6 : 5) * dt)
+    const focus = this.pickedTarget?.alive ? this.pickedTarget : null
     this.escorts.forEach((e, i) => {
       e.visible = show
-      const slot = ESCORT_SLOTS[i]
-      if (target && this.fighting()) {
-        // Saldır: hedefin çevresinde dönerek ateş et.
-        const a = this.clockT * 0.9 + i * 1.6
-        vA.set(Math.cos(a) * 22, Math.sin(a * 0.7) * 8, Math.sin(a) * 22).add(target.pos)
+      const ai = this.escortAi[i]
+      ai.t -= dt
+      // Hedef seçimi (birkaç saniyede bir yeniden düşünür).
+      if (fight && (ai.t <= 0 || !ai.target?.alive)) {
+        ai.t = 2.5 + Math.random() * 2.5
+        let best: Enemy | null = this.escortOrder === 'saldir' && focus ? focus : null
+        if (!best) {
+          let bd = Infinity
+          for (const en of this.enemies) {
+            if (!en.alive) continue
+            if (this.escortOrder === 'koru' && en.pos.distanceTo(this.pos) > 80) continue
+            const d = en.pos.distanceTo(e.position) * (0.7 + Math.random() * 0.6)
+            if (d < bd) {
+              bd = d
+              best = en
+            }
+          }
+        }
+        ai.target = best
+        ai.side = Math.random() < 0.5 ? -1 : 1
+      }
+      if (!fight) ai.target = null
+      const slot = ESCORT_SLOTS[i % ESCORT_SLOTS.length]
+      if (ai.target?.alive && fight) {
+        // Hedefin çevresinde dalgalı yörünge: yaklaş, yana kay, uzaklaş.
+        ai.phase += dt * (0.7 + (i % 3) * 0.15)
+        const r = 16 + Math.sin(ai.phase * 0.6) * 8
+        const a = ai.phase * ai.side + i * 1.7
+        vA.set(Math.cos(a) * r, Math.sin(ai.phase * 1.3 + i) * 7, Math.sin(a) * r).add(ai.target.pos)
+        if (this.escortOrder === 'koru') vA.lerp(this.pos, 0.5)
       } else {
         const spread = this.escortOrder === 'koru' ? 0.55 : 1
         vA.set(slot[0] * spread, slot[1] * spread, slot[2] * spread).applyQuaternion(this.quat).add(this.pos)
       }
       if (e.position.distanceToSquared(this.pos) > 400 * 400) e.position.copy(vA)
       else e.position.lerp(vA, k)
-      e.quaternion.slerp(this.quat, k)
-    })
-    if (!show || this.mode === 'upgrade') return
-    this.escortCd -= dt
-    if (this.escortCd > 0) return
-    this.escortCd = this.escortOrder === 'saldir' ? 0.8 : this.escortOrder === 'koru' ? 1.1 : 1.4
-    for (const e of this.escorts) {
-      let best: Enemy | null = target
-      let bd = 170
-      for (const en of this.enemies) {
-        if (best === target && target) break
-        if (!en.alive) continue
-        // Koru: yalnız sana yaklaşanları vurur.
-        if (this.escortOrder === 'koru' && en.pos.distanceTo(this.pos) > 70) continue
-        const d = en.pos.distanceTo(e.position)
-        if (d < bd) {
-          bd = d
-          best = en
+      // Yön: savaşta hedefe, barışta seninle aynı.
+      if (ai.target?.alive && fight) {
+        vB.subVectors(ai.target.pos, e.position)
+        if (vB.lengthSq() > 1e-4) {
+          quatFromForward(qA, vB.normalize())
+          qB.copy(qA).multiply(qC.setFromAxisAngle(AXIS_Z, Math.sin(ai.phase * 2) * 0.5 * ai.side))
+          e.quaternion.slerp(qB, 1 - Math.exp(-4 * dt))
         }
-      }
-      if (!best) return
-      vB.copy(best.pos).sub(e.position).normalize()
-      this.spawnShot(true, e.position, vB, (7 + this.squad.length) * (this.escortOrder === 'saldir' ? 1.3 : 1), 'bolt')
-    }
+      } else e.quaternion.slerp(this.quat, k)
+      if (!show || this.mode === 'upgrade' || !fight || !ai.target?.alive) return
+      // Kısa seriler: 3 atış, sonra nefes; isabet kusursuz değil.
+      ai.cd -= dt
+      if (ai.cd > 0) return
+      if (ai.burst <= 0) ai.burst = 3
+      ai.burst--
+      ai.cd = ai.burst > 0 ? 0.18 : 1.1 + Math.random() * 0.9
+      const d = ai.target.pos.distanceTo(e.position)
+      if (d > 190) return
+      vB.copy(ai.target.pos).addScaledVector(ai.target.vel, d / 260).sub(e.position).normalize()
+      const err = 0.05 + Math.random() * 0.06
+      vB.x += (Math.random() - 0.5) * err
+      vB.y += (Math.random() - 0.5) * err
+      vB.z += (Math.random() - 0.5) * err
+      vB.normalize()
+      this.spawnShot(true, e.position, vB, (6 + Math.min(12, this.squad.length * 0.5)) * (this.escortOrder === 'saldir' ? 1.25 : 1), 'laser')
+    })
   }
 
   private onLandColony(planet: Planet) {
@@ -10942,8 +11962,10 @@ class Game {
       const def = UNIVERSES[uid].planets.find((d) => d.home)
       if (!def || this.colonies[def.id]) continue
       const rnd = makeRng(hashSeed(`world:${uid}`))
-      const c = this.botColony({ def }, o.id, BOT_START_LEVEL, rnd, uid)
+      const t = WAR[o.id].tier
+      const c = this.botColony({ def }, o.id, t === 'kadim' ? 4 : t === 'gelişmiş' ? 3 : BOT_START_LEVEL, rnd, uid)
       c.countdown = BOT_WAVE_GAP
+      c.pop = this.capOf(c)
     }
   }
 
@@ -10988,7 +12010,7 @@ class Game {
 
   /** Ev sisteminde eğitim gemileri 3-5 arasında tutulur. */
   private keepHomePatrols(dt: number) {
-    if (!this.isHome() || this.layer !== 'ship' || !this.tutorialAt('home')) return
+    if (!this.isHome() || this.layer !== 'ship' || !this.tutorialAt('gate')) return
     this.homePatrolT -= dt
     const live = this.fleets.filter((f) => f.small).length + this.enemies.filter((e) => e.alive && e.small).length
     this.homePatrols = this.fleets.filter((f) => f.small).length
@@ -11061,13 +12083,27 @@ class Game {
     for (const spot of this.coreSpots) {
       if (!this.colonies[spot.c.planetId]) continue
       if (distPointSeg(spot.pos, shot.prev, shot.pos) < 4.6) {
-        this.damageOutpost(spot.c, spot.planet, shot.dmg, spot.pos, spot.up)
+        // Yörüngeden bombardıman çekirdeği en fazla %30'a kadar indirir: üssü almak için inmek gerekir.
+        const floor = spot.c.hullMax * 0.3
+        const real = shot.dmg * coreArmor(spot.c.level) * 0.5
+        if (spot.c.hull - real <= floor) {
+          spot.c.hull = Math.min(spot.c.hull, floor)
+          this.sparks.burst(spot.pos, 0x9adfff, 6, 5, 0.6, spot.up)
+          if (this.coreFloorT <= 0) {
+            this.coreFloorT = 8
+            this.toast('Çekirdeğin kalkanı tuttu: yörüngeden ancak bu kadar zayıflar. Ele geçirmek için in ve ekibinle saldır.')
+          }
+          this.paintCoreBar(spot.c)
+          return true
+        }
+        this.damageOutpost(spot.c, spot.planet, shot.dmg * 0.5, spot.pos, spot.up)
         return true
       }
     }
     return false
   }
 
+  coreFloorT = 0
   private damageOutpost(c: Colony, planet: Planet, dmg: number, at: Vector3, up: Vector3) {
     const real = dmg * coreArmor(c.level)
     c.hull -= real
@@ -11125,6 +12161,7 @@ class Game {
           target.root.userData.aa = 0
           target.count--
           this.fx.explosion(target.pos, 0xff8a3a, 1.4)
+          if (target.faction) this.crewFall(target.pos, target.faction, 2)
           this.feed('◈', `Hava savunman bir ${target.faction ? factionName(target.faction) : 'düşman'} gemisini düşürdü`, 'good')
           if (target.count <= 0) {
             this.removeFleet(target)
@@ -11138,6 +12175,7 @@ class Game {
   /** Bot karakolları yakındaki oyuncu gemisine ateş eder; seviye arttıkça daha sık ve sert.
    *  Hava savunma taretleri de menzildeki gemiye ateş eder; uzaydan vurularak düşürülebilirler. */
   private updateOutpostGuns(dt: number) {
+    this.coreFloorT = Math.max(0, this.coreFloorT - dt)
     this.coreSpots.length = 0
     this.turretSpots.length = 0
     if (this.mode === 'map') this.updateOwnAA(dt)
@@ -11154,38 +12192,54 @@ class Game {
         const tu = this.worldDir(t.dir, planet, new Vector3())
         const tp = this.surfacePos(tu, planet, 1.8, new Vector3())
         this.turretSpots.push({ c, planet, t, pos: tp, up: tu })
-        if (t.kind !== 'hava' || this.mode !== 'map') continue
+        if (this.mode !== 'map') continue
         const td = tp.distanceTo(this.pos)
+        if (t.kind !== 'hava') {
+          // Kara tareti de alçaktan geçen gemiye ateş eder (yaklaşınca gemiyle üs almak kolay olmasın).
+          const alt = vO2.copy(this.pos).sub(planet.pos).length() - planet.def.radius
+          if (td > 150 || alt > 90) continue
+          t.cool = Math.max(0, t.cool - dt)
+          if (t.cool > 0) continue
+          t.cool = 1.1
+          vO1.copy(this.pos).addScaledVector(this.vel, td / 160).sub(tp)
+          vO1.x += (Math.random() - 0.5) * 3
+          vO1.z += (Math.random() - 0.5) * 3
+          if (vO1.lengthSq() < 1e-4) continue
+          this.spawnShot(false, tp, vO1.normalize(), (7 + 3 * c.level) * turretLvlMul(t.lvl ?? 1) * this.tierMul(c.owner), 'flak')
+          this.fx.flash(tp, 0xffb060, 2.4, 0.12)
+          continue
+        }
         if (td > this.aaRange(t)) continue
         t.cool = Math.max(0, t.cool - dt)
         if (t.cool > 0) continue
         const lvl = t.lvl ?? 1
-        t.cool = Math.max(0.5, 1.5 - 0.25 * lvl)
-        vO1.copy(this.pos).addScaledVector(this.vel, td / 140).sub(tp)
+        t.cool = Math.max(0.45, 1.25 - 0.2 * lvl)
+        vO1.copy(this.pos).addScaledVector(this.vel, td / 230).sub(tp)
         vO1.x += (Math.random() - 0.5) * 4
         vO1.y += (Math.random() - 0.5) * 3
         vO1.z += (Math.random() - 0.5) * 4
         if (vO1.lengthSq() < 1e-4) continue
         vO1.normalize()
-        this.spawnShot(false, tp, vO1, (4 + 2 * c.level) * turretLvlMul(lvl), 'bolt')
+        this.spawnShot(false, tp, vO1, (7 + 3 * c.level) * turretLvlMul(lvl) * this.tierMul(c.owner), 'flak')
+        this.fx.flash(tp, 0xffb060, 3, 0.14)
         this.audio.laser(true)
         if (!this.aaWarned) {
           this.aaWarned = true
-          this.toast('Hava savunma tareti ateş ediyor! Yörüngeden vurup düşür ya da menzilinden (~130) çık.')
+          this.toast(`Hava savunma tareti ateş ediyor! Menzili (~${Math.round(this.aaRange(t))}) senin silahlarından uzun: hızla yaklaş, alçal, kaçın ya da önce ekibinle in.`)
         }
       }
       const d = pos.distanceTo(this.pos)
-      if (d > 95) continue
+      if (d > 170) continue
       c.shipCool = (c.shipCool ?? 1.2) - dt
       if (c.shipCool > 0) continue
       c.shipCool = Math.max(0.55, 2.4 - 0.3 * c.level)
-      vO1.copy(this.pos).addScaledVector(this.vel, d / 128).sub(pos)
+      vO1.copy(this.pos).addScaledVector(this.vel, d / 230).sub(pos)
       vO1.x += (Math.random() - 0.5) * 3
       vO1.y += (Math.random() - 0.5) * 2
       vO1.z += (Math.random() - 0.5) * 3
       if (vO1.lengthSq() < 1e-4) continue
       vO1.normalize()
-      this.spawnShot(false, pos, vO1, 3 + 2.2 * c.level, 'bolt')
+      this.spawnShot(false, pos, vO1, (5 + 3 * c.level) * this.tierMul(c.owner), 'flak')
       this.audio.laser(true)
     }
   }
@@ -11248,8 +12302,10 @@ class Game {
     )
   }
 
-  private botNotice(uid: UniId, msg: string) {
+  private botNotice(uid: UniId, msg: string, big = false) {
     if (uid === this.universeId || uid === homeSystem(this.originId)) this.toast(msg)
+    // Karanlık orman başladıktan sonra galaksideki fetihler olay akışına düşer (harita renkleri de değişir).
+    else if (big && this.darkForestOn) this.feed('⚑', `${UNIVERSES[uid].name}: ${msg}`, 'info')
   }
 
   private botFound(def: PlanetDef, uid: UniId, owner: OriginId, level: number) {
@@ -11294,6 +12350,12 @@ class Game {
       this.botNotice(c.universe, `${factionName(f)} ${c.planetName} karakolunu büyüttü (sv ${c.level}).`)
       return
     }
+    // Karanlık orman başlamadan türler yalnız kendi sistemlerinde büyür (kolonileşir, gelişir, asker basar).
+    if (!this.darkForestOn && !this.tutorialAt('gate')) {
+      const c = own[Math.floor(Math.random() * own.length)]
+      c.pop = Math.min(this.capOf(c), c.pop + 2)
+      return
+    }
     const from = [...new Set(own.map((c) => c.universe))]
     const targets = new Set<UniId>()
     for (const u of from) for (const h of UNIVERSES[u].holes) if (h.kind === 'worm' && h.to) targets.add(h.to)
@@ -11312,8 +12374,9 @@ class Game {
     const sa = best + 1
     const sb = v.level * 2 + v.turrets.length
     if (Math.random() < sa / (sa + sb)) {
+      const prev = v.owner
       this.flipOwner(v, this.planetOf(v), f)
-      this.botNotice(uid, `${factionName(f)} baskınla ${v.planetName} karakolunu ele geçirdi.`)
+      this.botNotice(uid, `${factionName(f)}, ${factionName(prev)} elindeki ${v.planetName} karakolunu ele geçirdi.`, true)
     } else v.hull = Math.max(1, v.hull - v.hullMax * 0.3)
   }
 
@@ -11332,9 +12395,21 @@ class Game {
     if (c.trainT > 0) return
     c.trainQ--
     c.trainT = TRAIN_TIME
-    c.trained = Math.min(trainCap(c.level), (c.trained ?? 0) + 1)
+    // İlk eğitilenler ana karakter (kışla sınırı kadar), sonrakiler asker.
+    const hero = (c.trained ?? 0) < trainCap(c.level)
+    if (hero) c.trained = (c.trained ?? 0) + 1
     c.pop = Math.min(this.capOf(c), c.pop + 1)
-    if (this.mine(c)) this.feed('⚔', `${c.planetName}: kışlada bir asker hazır`, 'good')
+    if (this.mine(c)) {
+      this.feed('⚔', `${c.planetName}: kışladan bir ${hero ? 'kahraman' : 'asker'} çıktı (nüfus ${Math.floor(c.pop)}/${this.capOf(c)})`, 'good')
+      // Üstündeysen asker hemen kışlanın yanında belirir.
+      const planet = this.footPlanet
+      if (planet && this.standingOn(c.planetId)) {
+        const kinds = this.units.filter((u) => u.alive && !u.squad && u.colonyId === c.planetId && isHero(u.kind)).length
+        this.spawnSettler(c, planet, hero ? heroKind(kinds) : 'settler')
+        this.audio.collect()
+      }
+      if (this.orderOpen) this.renderOrders()
+    }
   }
 
   /** Komutan yetiştir (kışla sv3+, koloni başına bir). */
@@ -11369,9 +12444,10 @@ class Game {
       this.toast('Kışla seviye 2 üste açılır. Üssü yükselt (B).')
       return false
     }
-    const queued = (c.trained ?? 0) + (c.trainQ ?? 0)
-    if (queued >= trainCap(c.level)) {
-      this.toast(`Kışla dolu (${trainCap(c.level)} eğitimli asker). Üssü yükselt ya da asker kaybedince yeniden eğit.`)
+    // Sınır nüfus: kuyruk + mevcut nüfus tavanı geçemez (üssü yükselt ya da ekibe asker al).
+    const cap = this.capOf(c)
+    if (Math.floor(c.pop) + (c.trainQ ?? 0) >= cap) {
+      this.toast(`Nüfus dolu (${Math.floor(c.pop)}/${cap}). Üssü yükselt (B) ya da askerleri ekibine al (K); sonra yeniden eğit.`)
       return false
     }
     if (!this.canPay(TRAIN_COST)) {
@@ -11828,10 +12904,16 @@ class Game {
         for (const u of game.units) {
           if (u.alive && !u.invader && u.colonyId === c.planetId) {
             u.hull = 1
+            u.cool = Math.max(u.cool, 1.5)
             n++
           }
         }
-        for (const t of c.turrets) if (t.alive) t.hull = 1
+        for (const t of c.turrets) if (t.alive) {
+          t.hull = 1
+          t.cool = Math.max(t.cool, 1.5)
+        }
+        // Yedek nüfus da tükenir (kademeli savunmalı yurtlarda testin ekibi yetişebilsin).
+        if (!game.mine(c)) c.pop = Math.min(c.pop, n)
         return n
       },
       questInfo: () => ({ idx: game.questIdx, id: game.quest().id, title: document.getElementById('q-title')?.textContent ?? '', route: game.route, mark: !document.getElementById('quest-mark')?.classList.contains('hidden') }),
@@ -12127,6 +13209,11 @@ class Game {
       tutorial: (gates: boolean, brief: boolean) => {
         game.testGates = gates
         game.testBrief = brief
+        // Eski testler gemide başlar: eğitim kapıları kapalıysa evdeki yaya başlangıçtan gemiye bin.
+        if (!gates && game.layer === 'foot' && game.mode === 'map') {
+          game.board()
+          game.fading = false
+        }
       },
       briefingOn: () => game.briefing,
       briefDbg: () => ({ p: game.briefPending, t: game.briefT, guide: game.save.settings.guide, tb: game.testBrief, mode: game.mode, enc: Boolean(game.encounter), fading: game.fading, en: game.enemies.filter((e) => e.alive).length, photo: game.photo }),
@@ -12236,6 +13323,65 @@ class Game {
         const f = game.spawnScout()
         return { id: f.id, faction: f.faction, dist: f.pos.distanceTo(game.pos) }
       },
+      fallTest: (id: string, alt: number, n = 4) => {
+        const planet = game.planets.find((p) => p.def.id === id)
+        if (!planet) return null
+        const at = planet.pos.clone().add(new Vector3(0, planet.def.radius + alt, 0))
+        let live = 0
+        for (let k = 0; k < 5 && !live; k++) live = game.crewFall(at, 'mars', n)
+        return { live, fallen: game.fallen.length }
+      },
+      invaders: () => game.units.filter((u) => u.alive && u.invader).map((u) => ({ hull: u.hull, max: u.hullMax, faction: u.faction })),
+      dfInfo: () => ({ on: game.darkForestOn, cine: Boolean(game.cine), title: document.getElementById('cine-title')?.textContent ?? '', cap: document.getElementById('cine-cap')?.textContent ?? '' }),
+      darkForestNow: () => game.darkForest(),
+      setDarkForest: (on: boolean) => {
+        game.darkForestOn = on
+      },
+      scanReport: () => ({ shown: !document.getElementById('scan-panel')?.classList.contains('hidden'), text: document.getElementById('scan-panel')?.textContent ?? '', exposed: game.exposedT, vis: game.vis }),
+      lockToggle: () => {
+        game.toggleLock()
+        return { lock: game.lockOn, target: Boolean(game.pickedTarget?.alive) }
+      },
+      speedNow: () => ({ speed: game.vel.length(), fwd: game.vel.dot(new Vector3(0, 0, -1).applyQuaternion(game.quat)) }),
+      wellMerge: () => {
+        const e = game.enemies.find((x) => x.alive)
+        const slot = game.enemyWells.find((w) => !w.alive) ?? game.enemyWells[0]
+        if (!e || !slot) return null
+        game.wellPos.copy(game.pos).add(new Vector3(0, 0, -60))
+        game.wellLife = 4.6
+        game.wellMesh.visible = true
+        game.wellMesh.position.copy(game.wellPos)
+        slot.owner = e
+        slot.pos.copy(game.wellPos).add(new Vector3(6, 0, 0))
+        slot.life = 3
+        slot.size = 1
+        slot.alive = true
+        slot.mesh.visible = true
+        const before = slot.size ?? 1
+        for (let i = 0; i < 10; i++) game.updateWell(1 / 60)
+        return { before, after: slot.size ?? 1, life: slot.life, alive: slot.alive }
+      },
+      launchNow: () => {
+        game.launchT = 0
+        const n0 = game.fleets.length
+        game.botLaunch(0.01)
+        return { added: game.fleets.length - n0, factions: game.fleets.map((f) => f.faction ?? '') }
+      },
+      crew: (want?: number | null) => {
+        if (want !== undefined) game.squadWant = want
+        return { cap: game.crewCap(), want: game.squadWant }
+      },
+      cmdStrip: () => ({ shown: !document.getElementById('cmd-strip')?.classList.contains('hidden'), text: document.getElementById('cmd-strip')?.textContent ?? '', buttons: document.querySelectorAll('#cmd-strip button').length }),
+      escortAiInfo: () => game.escortAi.map((a) => ({ target: Boolean(a.target?.alive), side: a.side })),
+      garibanInfo: () => ({ planet2: game.questPlanet2, fleets: game.fleets.filter((f) => f.gariban).map((f) => ({ planet: f.gariban, count: f.count, dist: f.pos.distanceTo(game.pos) })), fight: game.garibanFight }),
+      flyToGariban: (gap: number) => {
+        const f = game.fleets.find((x) => x.gariban)
+        if (!f) return false
+        vA.subVectors(game.pos, f.pos).normalize()
+        game.pos.copy(f.pos).addScaledVector(vA, gap)
+        game.vel.set(0, 0, 0)
+        return true
+      },
       scoutInfo: () => game.fleets.filter((f) => f.scout).map((f) => ({ state: f.state, dist: f.pos.distanceTo(game.pos), revealed: f.revealed })),
       flyToScout: (gap: number) => {
         const f = game.fleets.find((x) => x.scout)
@@ -12257,6 +13403,11 @@ class Game {
         game.skipRender = on
       },
       gpuInfo: () => ({ ...game.renderer.info.memory, programs: game.renderer.info.programs?.length ?? 0 }),
+      selLook: (which: 'cherub' | 'gariban' | null) => {
+        if (game.selOverride) game.selOverride.root.removeFromParent()
+        game.selOverride = which ? buildCreature(which === 'cherub' ? CHERUB_LOOK : GARIBAN_LOOK) : null
+        if (game.selOverride) game.scene.add(game.selOverride.root)
+      },
       selAttack: (p: number, yaw = 0) => {
         game.selAttackP = p
         game.selYaw = yaw
@@ -12755,7 +13906,6 @@ class Game {
         }
         return game.mode
       },
-      wellDbg: () => game.enemyWells.map((w) => ({ alive: w.alive, life: w.life, owner: w.owner ? { alive: w.owner.alive, d: w.owner.pos.distanceTo(w.pos), hull: w.owner.hull, attack: w.owner.attack } : null })).concat([{ mode: game.mode, hold: game.holdPose, wells: game.enemies.filter((e) => e.alive && e.attack === 'well').length } as never]),
       ownerAlive: () => game.enemies.some((x) => x.alive && x.attack === 'well'),
       dropEnemyWell: () => {
         const enemy = game.enemies.find((item) => item.alive)
