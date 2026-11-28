@@ -93,6 +93,8 @@ export type SystemSpec = {
   id: string
   theme: number
   holes: HoleDef[]
+  /** Yıldızın adı (ör. "Proxima"). */
+  starName?: string
   /** Ev gezegeni varsa (yıldızlı ev sistemleri). Yoksa sistem bir kara deliğin avlusudur. */
   home?: { name: string; color: number; village: Village }
 }
@@ -105,6 +107,17 @@ export const SYSTEM_SPREAD = 3.4
 export const ORBIT_GAP = 200
 /** Solucan deliğinin çevresinde gezegensiz kalacak pay: varış noktası bir gövdenin içine düşmesin. */
 export const WORM_CLEAR = 260
+
+/** Temanın renginden parlak bir yıldız rengi: tonu korur, doygun ve açık. */
+export function starColor(theme: number) {
+  const r = (theme >> 16) & 255
+  const g = (theme >> 8) & 255
+  const b = theme & 255
+  const max = Math.max(r, g, b, 1)
+  const k = 255 / max
+  const mix = (v: number) => Math.round(Math.min(255, v * k * 0.75 + 255 * 0.35))
+  return (mix(r) << 16) | (mix(g) << 8) | mix(b)
+}
 
 function ringGap(flatA: number, yA: number, flatB: number, yB: number) {
   return Math.hypot(flatA - flatB, yA - yB)
@@ -130,21 +143,23 @@ export function generateSystem(spec: SystemSpec): PlanetDef[] {
   let ring = 160 // halkaların dış sınırı; kara delik avlusunda merkez delikten pay
 
   if (spec.home) {
-    const sr = (20 + rnd() * 16) * PLANET_SIZE
+    // Sistemin yıldızı: büyük ve parlak; yaklaşınca enerji şarjı (çok yaklaşırsan yanarsın).
+    const sr = (44 + rnd() * 16) * PLANET_SIZE
     out.push({
       id: `${spec.id}-yildiz`,
-      name: 'Yıldız',
+      name: spec.starName ?? 'Yıldız',
       kind: 'mid',
       x: 0,
       y: 0,
       z: 0,
       radius: sr,
-      color: spec.theme,
+      color: starColor(spec.theme),
       gravity: 6,
       jump: 8,
       glide: 1,
       move: 1,
       landable: false,
+      heat: true,
     })
     place(0, 0, sr + 60)
     const hr = (100 + rnd() * 40) * PLANET_SIZE

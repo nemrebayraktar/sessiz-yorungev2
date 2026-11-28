@@ -1,4 +1,4 @@
-import { ORBIT_GAP, PLANET_SIZE, SYSTEM_SPREAD, bodyReach, generateSystem } from './worldgen'
+import { ORBIT_GAP, PLANET_SIZE, SYSTEM_SPREAD, bodyReach, generateSystem, starColor } from './worldgen'
 
 export type OriginId =
   | 'earth'
@@ -385,13 +385,18 @@ type PlanetSource = PlanetDef[] | ((holes: HoleDef[]) => PlanetDef[])
 
 /* Ev sistemleri ve ara bölgeler elle değil, evren kimliğinden üretilir (bkz. worldgen.ts).
    Ev gezegeninin kimliği (`<id>-ev`), köyü ve ev bonusu eskisi gibidir. */
-function tilted(id: string, theme: number, homeName: string, homeColor: number, village: Village): PlanetSource {
-  return (holes) => generateSystem({ id, theme, holes, home: { name: homeName, color: homeColor, village } })
+function tilted(id: string, theme: number, homeName: string, homeColor: number, village: Village, starName?: string): PlanetSource {
+  return (holes) => generateSystem({ id, theme, holes, starName, home: { name: homeName, color: homeColor, village } })
 }
 
 function courtyard(id: string, theme: number, cousins = false): PlanetSource {
   return (holes) => {
     const out = generateSystem({ id, theme, holes })
+    // Avlu dışındaki avlu sistemlerinde de bir yıldız var (enerji için): yörünge düzleminin çok altında, uzaktan görünür.
+    if (id !== 'avlu') {
+      const sr = 130
+      out.push({ id: `${id}-yildiz`, name: `${id === 'kizil' ? 'Kızıl Sığ' : 'Soluk Derin'} yıldızı`, kind: 'mid', x: 760, y: -1150, z: 520, radius: sr, color: starColor(theme), gravity: 6, jump: 8, glide: 1, move: 1, landable: false, heat: true })
+    }
     if (cousins) {
       // Tombişler (Altınların kuzenleri) bu sistemin en büyük iki karasal gezegeninde yaşar.
       const homes = out.filter((p) => p.landable !== false && !p.heat && p.kind !== 'small').sort((a, b) => b.radius - a.radius).slice(0, 2)
@@ -471,12 +476,15 @@ function solarSystem(): PlanetDef[] {
       const earth = out.find((d) => d.id === 'dunya') as PlanetDef
       const eflat = Math.hypot(earth.x, earth.z)
       const eAng = Math.atan2(earth.z, earth.x)
-      const d = bodyReach(earth.radius) + reach + ORBIT_GAP * 0.9
+      // Ay Dünya'ya en yakın gövde ama arası açık (gidip üs kurmak bir yolculuk olsun).
+      const d = bodyReach(earth.radius) + reach + ORBIT_GAP * 1.7
       const a = eAng + 2 * Math.asin(Math.min(0.9, d / (2 * eflat)))
       out.push(orb(id, name, Math.cos(a) * eflat, earth.y + 20, Math.sin(a) * eflat, radius, color, { landable: true, ...opt }))
       continue
     }
-    const flat = edge + ORBIT_GAP + reach
+    // Dünya ve ötesi daha geniş aralıklı: başka gezegende üs kurmanın anlamı olsun (Ay hariç hepsi uzak).
+    const gap = id === 'dunya' || i >= 3 ? ORBIT_GAP * 2.1 : ORBIT_GAP
+    const flat = edge + gap + reach
     edge = flat + reach
     const ang = 0.35 + i * 2.39996
     i++
@@ -503,8 +511,8 @@ export const UNIVERSES: Record<UniId, UniverseDef> = {
     [0.03, 0.03, 0.05],
     0.00035,
     [
-      { kind: 'hole', x: 0, y: 0, z: 0, rs: 18, gm: 82000, curve: 1.65 },
-      { kind: 'hole', x: 190, y: 80, z: 36, rs: 10, gm: 26000, curve: 2.05 },
+      { kind: 'hole', x: 0, y: 0, z: 0, rs: 60, gm: 270000, curve: 1.65 }, // galaksinin kalbi: dev kara delik
+      { kind: 'hole', x: 300, y: 120, z: 60, rs: 10, gm: 26000, curve: 2.05 },
       { kind: 'worm', x: -150, y: 14, z: 64, rs: 0, gm: 0, curve: 1, to: 'kizil' },
       { kind: 'worm', x: 120, y: -22, z: -230, rs: 0, gm: 0, curve: 1, to: 'gunes' },
       { kind: 'worm', x: 125, y: -150, z: 217, rs: 0, gm: 0, curve: 1, to: 'marskol' },
@@ -572,7 +580,7 @@ export const UNIVERSES: Record<UniId, UniverseDef> = {
       { kind: 'worm', x: 260, y: 30, z: 220, rs: 0, gm: 0, curve: 1, to: 'proxima' },
       { kind: 'worm', x: -40, y: 240, z: 80, rs: 0, gm: 0, curve: 1, to: 'avlu' },
     ],
-    tilted('marskol', 0xc4603a, 'Ross 128 b', 0x9a7a52, 'mars'),
+    tilted('marskol', 0xc4603a, 'Ross 128 b', 0x9a7a52, 'mars', 'Ross 128'),
   ),
   proxima: tone(
     'proxima',
@@ -591,7 +599,7 @@ export const UNIVERSES: Record<UniId, UniverseDef> = {
       { kind: 'worm', x: -220, y: 40, z: -180, rs: 0, gm: 0, curve: 1, to: 'kepler186' },
       { kind: 'worm', x: 40, y: -180, z: 160, rs: 0, gm: 0, curve: 1, to: 'kizil' },
     ],
-    tilted('proxima', 0x8a3040, 'Proxima b', 0x6a2438, 'shadow'),
+    tilted('proxima', 0x8a3040, 'Proxima b', 0x6a2438, 'shadow', 'Proxima Centauri'),
   ),
   alpha: tone(
     'alpha',
@@ -610,7 +618,7 @@ export const UNIVERSES: Record<UniId, UniverseDef> = {
       { kind: 'worm', x: 20, y: 260, z: 10, rs: 0, gm: 0, curve: 1, to: 'avlu' },
       { kind: 'worm', x: -60, y: -160, z: 140, rs: 0, gm: 0, curve: 1, to: 'kizil' },
     ],
-    tilted('alpha', 0x7a4ad0, 'Alpha B', 0x8d5ae0, 'purple'),
+    tilted('alpha', 0x7a4ad0, 'Alpha B', 0x8d5ae0, 'purple', 'Alpha Centauri A'),
   ),
   trappist: tone(
     'trappist',
@@ -629,7 +637,7 @@ export const UNIVERSES: Record<UniId, UniverseDef> = {
       { kind: 'worm', x: -20, y: 220, z: 70, rs: 0, gm: 0, curve: 1, to: 'k218' },
       { kind: 'worm', x: -180, y: 30, z: 200, rs: 0, gm: 0, curve: 1, to: 'kepler186' },
     ],
-    tilted('trappist', 0x3d9a90, 'TRAPPIST-1e', 0x2f8f86, 'ocean'),
+    tilted('trappist', 0x3d9a90, 'TRAPPIST-1e', 0x2f8f86, 'ocean', 'TRAPPIST-1'),
   ),
   k218: tone(
     'k218',
@@ -648,7 +656,7 @@ export const UNIVERSES: Record<UniId, UniverseDef> = {
       { kind: 'worm', x: -80, y: -40, z: -240, rs: 0, gm: 0, curve: 1, to: 'kizil' },
       { kind: 'worm', x: 200, y: 60, z: 160, rs: 0, gm: 0, curve: 1, to: 'trappist' },
     ],
-    tilted('k218', 0x2f8fbf, 'K2-18b', 0x1f7aa8, 'ocean'),
+    tilted('k218', 0x2f8fbf, 'K2-18b', 0x1f7aa8, 'ocean', 'K2-18'),
   ),
   kepler186: tone(
     'kepler186',
@@ -667,7 +675,7 @@ export const UNIVERSES: Record<UniId, UniverseDef> = {
       { kind: 'worm', x: 60, y: 40, z: -250, rs: 0, gm: 0, curve: 1, to: 'trappist' },
       { kind: 'worm', x: 180, y: 210, z: 40, rs: 0, gm: 0, curve: 1, to: 'soluk' },
     ],
-    tilted('kepler186', 0x6aaa48, 'Kepler-186f', 0x4e8f38, 'plant'),
+    tilted('kepler186', 0x6aaa48, 'Kepler-186f', 0x4e8f38, 'plant', 'Kepler-186'),
   ),
   gliese: tone(
     'gliese',
@@ -686,7 +694,7 @@ export const UNIVERSES: Record<UniId, UniverseDef> = {
       { kind: 'worm', x: 70, y: -30, z: 230, rs: 0, gm: 0, curve: 1, to: 'kepler452' },
       { kind: 'worm', x: -200, y: 80, z: -40, rs: 0, gm: 0, curve: 1, to: 'soluk' },
     ],
-    tilted('gliese', 0xd06a28, 'Gliese 667 Cc', 0xc45a22, 'red'),
+    tilted('gliese', 0xd06a28, 'Gliese 667 Cc', 0xc45a22, 'red', 'Gliese 667 C'),
   ),
   kepler452: tone(
     'kepler452',
@@ -704,7 +712,7 @@ export const UNIVERSES: Record<UniId, UniverseDef> = {
       { kind: 'worm', x: -90, y: -40, z: -230, rs: 0, gm: 0, curve: 1, to: 'gliese' },
       { kind: 'worm', x: 20, y: 250, z: -10, rs: 0, gm: 0, curve: 1, to: 'soluk' },
     ],
-    tilted('kepler452', 0xe0b15a, 'Kepler-452b', 0xf0c36a, 'gold'),
+    tilted('kepler452', 0xe0b15a, 'Kepler-452b', 0xf0c36a, 'gold', 'Kepler-452'),
   ),
   gunes: tone(
     'gunes',

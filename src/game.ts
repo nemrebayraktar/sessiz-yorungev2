@@ -370,6 +370,7 @@ const vO1 = new Vector3()
 const vO2 = new Vector3()
 const vO3 = new Vector3()
 const vO4 = new Vector3()
+const vO5 = new Vector3()
 const vFa = new Vector3()
 const vFb = new Vector3()
 const bX = new Vector3()
@@ -1037,6 +1038,7 @@ class Game {
     // Gökyüzü sonsuz uzakta durur: uzak gezegenler küre duvarının arkasında kalmasın.
     this.sky.position.copy(this.camera.position)
     this.stars.position.copy(this.camera.position)
+    this.paintFarHole()
     this.updateLens()
     if (!this.skipRender) this.composer.render()
     this.input.endFrame()
@@ -2713,6 +2715,9 @@ class Game {
 
   private endCine() {
     this.cine = null
+    const st = this.storyAfterCine
+    this.storyAfterCine = null
+    if (st) window.setTimeout(() => this.showStory(st.eyebrow, st.text, st.button), 50)
     document.body.classList.remove('cine-on')
     must<HTMLElement>('cine').classList.add('hidden')
     this.snapCamera = true
@@ -3312,8 +3317,8 @@ class Game {
     if (this.layer === 'foot') return
     const marks: { name: string; pos: Vector3 }[] = []
     for (const planet of this.planets) {
-      if (planet.def.heat || planet === this.footPlanet) continue // üstünde durduğun gezegenin etiketi gereksiz
-      marks.push({ name: planet.def.name, pos: planet.pos })
+      if (planet === this.footPlanet) continue // üstünde durduğun gezegenin etiketi gereksiz
+      marks.push({ name: planet.def.heat ? `☀ ${planet.def.name} · enerji` : planet.def.name, pos: planet.pos })
     }
     for (const hole of this.holes) {
       if (hole.kind === 'worm' && hole.to) marks.push({ name: UNIVERSES[hole.to].name, pos: hole.pos })
@@ -3382,7 +3387,7 @@ class Game {
     this.heat = 0
     this.solarGain = 0
     this.burning = false
-    if (this.universeId !== 'gunes' || this.layer === 'foot') return
+    if (this.layer === 'foot') return
     const sun = this.planets.find((p) => p.def.heat)
     if (!sun) return
     const R = sun.def.radius
@@ -6303,6 +6308,39 @@ class Game {
   }
 
   /** Kapı ağı: zayıf ırklar solda, en gelişmişler sağda. Bulunduğun yer, evin ve rotanın yolu işaretli. */
+  /** Uzak dev kara delik: Avlu dışındaki her sistemin göğünde, haritadaki Avlu yönünde parlayan halka. */
+  private farHole: Group | null = null
+  private paintFarHole() {
+    if (!this.farHole) {
+      const g = new Group()
+      const ring = new SpriteMaterial({ map: glowTexture(), color: 0xff9a4a, transparent: true, blending: AdditiveBlending, depthWrite: false, fog: false, opacity: 0.9 })
+      ring.toneMapped = false
+      const halo = new Sprite(ring)
+      halo.scale.set(2600, 2600, 1)
+      const darkM = new MeshBasicMaterial({ color: 0x000000, fog: false, depthWrite: false })
+      const dark = new Mesh(new SphereGeometry(330, 24, 16), darkM)
+      dark.renderOrder = 2
+      const diskM = new MeshBasicMaterial({ color: 0xffb070, fog: false, transparent: true, opacity: 0.55, blending: AdditiveBlending, depthWrite: false, side: DoubleSide })
+      diskM.toneMapped = false
+      const disk = new Mesh(new RingGeometry(420, 1300, 48), diskM)
+      disk.rotation.x = -Math.PI / 2 + 0.35
+      g.add(halo, disk, dark)
+      g.name = 'farHole'
+      this.scene.add(g)
+      this.farHole = g
+    }
+    const g = this.farHole
+    const show = this.universeId !== 'avlu' && (this.mode === 'map' || this.mode === 'combat' || this.mode === 'pause')
+    g.visible = show
+    if (!show) return
+    const a = Game.NET_LAYOUT[this.universeId]
+    const b = Game.NET_LAYOUT.avlu
+    vO5.set(b[0] - a[0], -0.08, b[1] - a[1])
+    if (vO5.lengthSq() < 1e-6) vO5.set(1, -0.08, 0)
+    vO5.normalize()
+    g.position.copy(this.camera.position).addScaledVector(vO5, SKY_RADIUS * 0.8)
+  }
+
   static readonly NET_LAYOUT: Record<UniId, [number, number]> = {
     gunes: [0.08, 0.27],
     marskol: [0.08, 0.73],
@@ -7395,7 +7433,44 @@ class Game {
     for (const r of Object.values(this.selCreatures)) if (r) r.root.visible = false
   }
 
+  /** Dev kara deliğin iki kutbundan fışkıran ışık hüzmeleri (yalnız Avlu). */
+  private jets: Group | null = null
+  private showJets(at: Vector3, rs: number) {
+    if (!this.jets) {
+      const g = new Group()
+      for (const side of [1, -1]) {
+        const m = new MeshBasicMaterial({ color: 0x9ac8ff, transparent: true, opacity: 0.32, blending: AdditiveBlending, depthWrite: false, side: DoubleSide, fog: false })
+        m.toneMapped = false
+        const cone = new Mesh(new CylinderGeometry(rs * 0.25, rs * 1.6, rs * 40, 24, 1, true), m)
+        cone.position.y = side * rs * 20
+        if (side < 0) cone.rotation.x = Math.PI
+        const core = new Mesh(new CylinderGeometry(rs * 0.06, rs * 0.35, rs * 40, 12, 1, true), m.clone())
+        ;(core.material as MeshBasicMaterial).opacity = 0.6
+        core.position.copy(cone.position)
+        core.rotation.copy(cone.rotation)
+        g.add(cone, core)
+      }
+      // Dev hale: kara deliğin çevresindeki sıcak ışık (Avlu'ya girer girmez gözü alır).
+      const hm = new SpriteMaterial({ map: glowTexture(), color: 0xff8a3a, transparent: true, blending: AdditiveBlending, depthWrite: false, fog: false, opacity: 0.75 })
+      hm.toneMapped = false
+      const halo = new Sprite(hm)
+      halo.scale.set(rs * 34, rs * 34, 1)
+      const hm2 = hm.clone()
+      hm2.color.set(0xffd9a0)
+      hm2.opacity = 0.5
+      const inner = new Sprite(hm2)
+      inner.scale.set(rs * 12, rs * 12, 1)
+      g.add(halo, inner)
+      this.mapRoot.add(g)
+      this.jets = g
+    }
+    this.jets.visible = true
+    this.jets.position.copy(at)
+    this.jets.rotation.set(0, 0, 0)
+  }
+
   private layoutUniverse(id: UniId) {
+    if (this.jets) this.jets.visible = false
     this.clearOpp()
     const uni = UNIVERSES[id]
     this.universeId = id
@@ -7421,7 +7496,8 @@ class Game {
       disk.visible = true
       disk.position.set(def.x, def.y, def.z)
       // Sessiz Avlu galaksinin kalbi: birikim diski çok daha geniş (görsel şölen).
-      disk.scale.setScalar(Math.max(0.5, def.rs / 18) * (id === 'avlu' ? 2.6 : 1))
+      disk.scale.setScalar(Math.max(0.5, def.rs / 18) * (id === 'avlu' && def.rs > 30 ? 1.9 : 1))
+      if (id === 'avlu' && def.rs > 30) this.showJets(disk.position, def.rs)
       this.holes.push({
         kind: 'hole',
         pos: disk.position,
@@ -7540,6 +7616,10 @@ class Game {
   }
 
   private transit(to: UniId) {
+    if (this.cine) {
+      this.storyAfterCine = null
+      this.endCine()
+    }
     if (this.fading || this.layer === 'foot') return
     if (this.mode === 'combat') {
       this.ending = true
@@ -7611,8 +7691,31 @@ class Game {
       `Çevresindeki mor girdaplar diğer sistemlere açılır: ${links.join(', ')}.`,
       'Kara deliğe yaklaştıkça zaman yavaşlar (sol üstteki zaman oranına bak) ve ışık bükülür. Olay ufkuna düşen hiçbir şey geri dönmez; kenarına kadar yaklaş, içine girme.',
     ].join('\n')
-    this.showStory('Sessiz Avlu · Kavşak', text, 'Anladım')
+    // Önce sinematik: kamera dev kara deliğin çevresinde süzülür (ilk varışta bir kez).
+    const hole = this.holes.find((h) => h.kind === 'hole')
+    if (hole && !this.cine) {
+      this.startCine(hole.pos, new Vector3(0, 1, 0), [
+        'Sessiz Avlu. Galaksinin kalbinde dev bir kara delik.',
+        "Bütün eşikler buraya bağlanır: her sistemden buraya, buradan her sisteme yol vardır.",
+        `Çevresindeki girdaplar: ${links.join(', ')}.`,
+        'Yaklaştıkça zaman yavaşlar, ışık bükülür. Olay ufkuna düşen geri dönmez.',
+      ], hole.rs, 1, 6, 'SESSİZ AVLU')
+      const c = (this as { cine: Game['cine'] }).cine
+      if (c) {
+        c.fresh = true
+        // R = olay ufku: uzaktan yaklaşma, diskin hizasından geçiş, kutup hüzmesine yükselme, geri çekilme.
+        c.shots = [
+          { a0: 0.4, a1: 0.7, d0: 70, d1: 45, h0: 14, h1: 8, f0: 0, f1: 0 },
+          { a0: 0.7, a1: 1.6, d0: 40, d1: 26, h0: 4, h1: 1.2, f0: 0, f1: 0 },
+          { a0: 1.6, a1: 2.2, d0: 24, d1: 16, h0: 1, h1: 12, f0: 0, f1: 4 },
+          { a0: 2.2, a1: 2.6, d0: 18, d1: 60, h0: 10, h1: 22, f0: 2, f1: 0 },
+        ]
+      }
+    }
+    if (this.cine) this.storyAfterCine = { eyebrow: 'Sessiz Avlu · Kavşak', text, button: 'Anladım' }
+    else this.showStory('Sessiz Avlu · Kavşak', text, 'Anladım')
   }
+  private storyAfterCine: { eyebrow: string; text: string; button: string } | null = null
 
   private lensFocus() {
     if (this.wellLife > 0) return { pos: this.wellPos, rs: 5.4 }
@@ -8411,6 +8514,29 @@ class Game {
       mesh.rotation.set(0, 0, 0)
       mesh.scale.setScalar(def.radius)
       paintPlanet(mesh, def.kind, def.color, Boolean(def.rings), Boolean(def.heat))
+      // Yıldız: çok parlak, uzaktan seçilen ışık halesi (iki katman: geniş hale + sıcak çekirdek).
+      {
+        let glow = mesh.getObjectByName('starGlow') as Sprite | undefined
+        if (def.heat && !glow) {
+          const mk = (scale: number, opacity: number) => {
+            const m = new SpriteMaterial({ map: glowTexture(), color: 0xffffff, transparent: true, blending: AdditiveBlending, depthWrite: false, opacity, fog: false })
+            m.toneMapped = false
+            const sp = new Sprite(m)
+            sp.scale.set(scale, scale, 1)
+            return sp
+          }
+          glow = mk(7.5, 0.85)
+          glow.name = 'starGlow'
+          glow.add(mk(0.45, 1))
+          mesh.add(glow)
+        }
+        if (glow) {
+          glow.visible = Boolean(def.heat)
+          ;(glow.material as SpriteMaterial).color.set(def.color)
+          const core = glow.children[0] as Sprite | undefined
+          if (core) (core.material as SpriteMaterial).color.set(0xfff6e0)
+        }
+      }
       if (def.landable !== false || def.heat || def.radius > 50) {
         const sphere = mesh.children[0] as Mesh
         sphere.geometry.dispose()
